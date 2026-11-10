@@ -4,8 +4,8 @@ use gpui::{
     Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, GestureTuning,
     Image, ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
-    Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent, TouchId,
-    TouchPhase, point, px,
+    PhysicalKey, Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent,
+    TouchId, TouchPhase, point, px,
 };
 use wasm_bindgen::prelude::*;
 
@@ -752,7 +752,7 @@ impl WebWindowInner {
                 keystroke,
                 is_held,
                 prefer_character_input: false,
-                physical_key: None,
+                physical_key: PhysicalKey::from_code(&event.code()),
             }));
 
             if let Some(result) = result {
@@ -815,7 +815,7 @@ impl WebWindowInner {
 
             let result = this.dispatch_input(PlatformInput::KeyUp(KeyUpEvent {
                 keystroke,
-                physical_key: None,
+                physical_key: PhysicalKey::from_code(&event.code()),
             }));
             if let Some(result) = result {
                 if !result.propagate {
