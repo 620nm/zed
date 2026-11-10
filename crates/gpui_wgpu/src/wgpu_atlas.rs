@@ -122,35 +122,6 @@ impl PlatformAtlas for WgpuAtlas {
     fn remove(&self, key: &AtlasKey) {
         self.0.lock().remove(key);
     }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-}
-
-impl WgpuAtlas {
-    /// The device and queue this atlas (and its window's renderer) use.
-    pub fn device_and_queue(&self) -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
-        let lock = self.0.lock();
-        (lock.backend.device.clone(), lock.backend.queue.clone())
-    }
-
-    /// A dedicated polychrome texture of exactly `size` that the caller renders
-    /// into and paints with `paint_atlas_tile`. Off GL it also allows an sRGB
-    /// view of its format; on GL the caller writes sRGB-encoded texels itself.
-    pub fn render_target(&self, size: Size<DevicePixels>) -> Option<(AtlasTile, wgpu::Texture)> {
-        let mut lock = self.0.lock();
-        let texture = lock
-            .backend
-            .push_texture(size, AtlasTextureKind::Polychrome, true);
-        let tile = texture.allocate(size)?;
-        Some((tile, texture.texture.clone()))
-    }
-
-    /// Free a tile from `render_target`.
-    pub fn release_render_target(&self, tile: AtlasTile) {
-        AtlasBackend::remove(&mut self.0.lock().backend, tile);
-    }
 }
 
 impl AtlasBackend for WgpuAtlasTextures {
@@ -205,7 +176,7 @@ impl WgpuAtlasTextures {
             }
         }
 
-        let texture = self.push_texture(size, texture_kind, false);
+        let texture = self.push_texture(size, texture_kind);
         texture.allocate(size)
     }
 
@@ -213,7 +184,6 @@ impl WgpuAtlasTextures {
         &mut self,
         min_size: Size<DevicePixels>,
         kind: AtlasTextureKind,
-        render_target: bool,
     ) -> &mut WgpuAtlasTexture {
         const DEFAULT_ATLAS_SIZE: Size<DevicePixels> = Size {
             width: DevicePixels(1024),
@@ -225,25 +195,11 @@ impl WgpuAtlasTextures {
             height: DevicePixels(max_texture_size),
         };
 
-        // A render target is exactly its tile, so no image ever packs beside it.
-        let size = if render_target {
-            min_size.min(&max_atlas_size)
-        } else {
-            min_size.min(&max_atlas_size).max(&DEFAULT_ATLAS_SIZE)
-        };
+        let size = min_size.min(&max_atlas_size).max(&DEFAULT_ATLAS_SIZE);
         let format = match kind {
             AtlasTextureKind::Monochrome => wgpu::TextureFormat::R8Unorm,
             AtlasTextureKind::Subpixel | AtlasTextureKind::Polychrome => self.color_texture_format,
         };
-        // GL has no view-format reinterpretation (DownlevelFlags::VIEW_FORMATS),
-        // so there a render target is plain and the caller encodes sRGB itself.
-        let srgb_view = [format.add_srgb_suffix()];
-        let srgb_view: &[wgpu::TextureFormat] =
-            if render_target && self.device.adapter_info().backend != wgpu::Backend::Gl {
-                &srgb_view
-            } else {
-                &[]
-            };
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("atlas"),
@@ -256,14 +212,8 @@ impl WgpuAtlasTextures {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: if render_target {
-                wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT
-            } else {
-                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST
-            },
-            view_formats: srgb_view,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

@@ -1835,11 +1835,6 @@ pub trait PlatformAtlas {
     fn contains(&self, _key: &AtlasKey) -> bool {
         false
     }
-
-    /// The backend atlas, for downcasting to its concrete type.
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        None
-    }
 }
 
 #[doc(hidden)]
