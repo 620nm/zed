@@ -1402,7 +1402,10 @@ impl MetalRenderer {
         }
 
         for (index, surface) in surfaces.iter().enumerate() {
-            let image_buffer = &surface.image_buffer;
+            // Custom sources are drawn by the wgpu renderer only.
+            let gpui::SurfaceSource::Surface(image_buffer) = &surface.source else {
+                continue;
+            };
             let texture_size = size(
                 DevicePixels::from(CVPixelBufferGetWidth(image_buffer) as i32),
                 DevicePixels::from(CVPixelBufferGetHeight(image_buffer) as i32),
