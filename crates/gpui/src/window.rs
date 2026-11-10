@@ -5423,6 +5423,30 @@ impl Window {
         });
     }
 
+    /// This window's sprite atlas (downcast with `PlatformAtlas::as_any`).
+    pub fn sprite_atlas(&self) -> &Arc<dyn PlatformAtlas> {
+        &self.sprite_atlas
+    }
+
+    /// Paint an atlas tile the caller owns and fills itself (a render target on
+    /// the atlas's device) at the current z-index.
+    pub fn paint_atlas_tile(&mut self, bounds: Bounds<Pixels>, tile: AtlasTile) {
+        self.invalidator.debug_assert_paint();
+        let bounds = self.snap_bounds(bounds);
+        let content_mask = self.snapped_content_mask();
+        let opacity = self.element_opacity();
+        self.next_frame.scene.insert_primitive(PolychromeSprite {
+            order: 0,
+            pad: 0,
+            grayscale: false.into(),
+            bounds,
+            content_mask,
+            corner_radii: Corners::default(),
+            tile,
+            opacity,
+        });
+    }
+
     /// Removes an image from the sprite atlas.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         for frame_index in 0..data.frame_count() {
