@@ -2822,6 +2822,100 @@ mod tests {
         Ok(())
     }
 
+    /// A custom surface draws in paint order between two quads, clipped to its
+    /// content mask, with an sRGB source re-encoded to the stored bytes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_renderer_draws_custom_surface_in_order() -> anyhow::Result<()> {
+        use std::{cell::Cell, rc::Rc};
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        let calls = Rc::new(Cell::new(0u32));
+        let producer = {
+            let calls = calls.clone();
+            let mut target: Option<wgpu::TextureView> = None;
+            crate::WgpuSurfaceProducer::new(move |frame| {
+                calls.set(calls.get() + 1);
+                let view = target
+                    .get_or_insert_with(|| {
+                        frame
+                            .device
+                            .create_texture(&wgpu::TextureDescriptor {
+                                label: Some("test surface"),
+                                size: wgpu::Extent3d {
+                                    width: frame.size.width.0 as u32,
+                                    height: frame.size.height.0 as u32,
+                                    depth_or_array_layers: 1,
+                                },
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                                view_formats: &[],
+                            })
+                            .create_view(&wgpu::TextureViewDescriptor::default())
+                    })
+                    .clone();
+                // Linear 0.214 green is stored as sRGB byte 128.
+                frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("test surface clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.0,
+                                g: 0.214_041_14,
+                                b: 0.0,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    ..Default::default()
+                });
+                Some(crate::WgpuSurfaceTexture {
+                    view,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                })
+            })
+        };
+        let scaled = |x: f32, width: f32| Bounds {
+            origin: Point {
+                x: x.into(),
+                y: 0.0.into(),
+            },
+            size: Size {
+                width: width.into(),
+                height: 32.0.into(),
+            },
+        };
+        let mut scene = Scene::default();
+        scene.insert_primitive(solid_quad(0.0, 0.0, 32.0, 32.0, gpui::red()));
+        scene.insert_primitive(gpui::PaintSurface {
+            order: 0,
+            bounds: scaled(16.0, 32.0),
+            content_mask: ContentMask {
+                bounds: scaled(16.0, 24.0),
+            },
+            source: gpui::SurfaceSource::Custom(producer),
+        });
+        scene.insert_primitive(solid_quad(28.0, 0.0, 8.0, 32.0, gpui::blue()));
+        scene.finish();
+
+        let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+        assert_eq!(calls.get(), 1);
+        assert_pixel(&image, 8, 16, RED);
+        assert_pixel(&image, 20, 16, [0, 128, 0, 255]);
+        assert_pixel(&image, 32, 16, BLUE);
+        assert_pixel(&image, 38, 16, [0, 128, 0, 255]);
+        let clipped = image.get_pixel(44, 16).0;
+        assert_eq!(clipped[1], 0, "pixel (44, 16) outside the content mask was {clipped:?}");
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn headless_renderer_captures_each_requested_size() -> anyhow::Result<()> {
