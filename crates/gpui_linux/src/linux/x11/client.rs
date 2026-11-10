@@ -52,6 +52,7 @@ use crate::linux::{
     DEFAULT_CURSOR_ICON_NAME, capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state,
     is_within_click_distance, keystroke_from_xkb, keystroke_underlying_dead_key,
     log_cursor_icon_warning, modifiers_from_xkb, new_xkb_context, open_uri_internal,
+    physical_key_from_xkb,
     platform::{DOUBLE_CLICK_INTERVAL, SCROLL_LINES},
     reveal_path_internal,
     xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
@@ -225,6 +226,8 @@ pub struct X11ClientState {
     pub(crate) pre_edit_text: Option<String>,
     pub(crate) composing: bool,
     pub(crate) pre_key_char_down: Option<Keystroke>,
+    /// Keycodes pressed and not yet released, to tell auto-repeat from a first press.
+    pressed_keys: HashSet<xproto::Keycode>,
     pub(crate) cursor_handle: cursor::Handle,
     pub(crate) cursor_styles: HashMap<xproto::Window, CursorStyle>,
     pub(crate) cursor_cache: HashMap<CursorStyle, Option<xproto::Cursor>>,
@@ -433,6 +436,22 @@ impl X11Connection {
         )?;
         anyhow::ensure!(xkb.supported, "X server does not support XKB");
 
+        // Report a held key's auto-repeat as presses alone, as Wayland does,
+        // instead of release/press pairs.
+        let per_client = xkb::PerClientFlag::DETECTABLE_AUTO_REPEAT;
+        get_reply(
+            || "Failed to enable XKB detectable auto-repeat",
+            xcb_connection.xkb_per_client_flags(
+                xkb::ID::USE_CORE_KBD.into(),
+                per_client,
+                per_client,
+                0u32.into(),
+                0u32.into(),
+                0u32.into(),
+            ),
+        )
+        .log_err();
+
         let events = xkb::EventType::STATE_NOTIFY
             | xkb::EventType::MAP_NOTIFY
             | xkb::EventType::NEW_KEYBOARD_NOTIFY;
@@ -539,6 +558,7 @@ impl X11Connection {
                 compose_state,
                 pre_edit_text: None,
                 pre_key_char_down: None,
+                pressed_keys: HashSet::default(),
                 composing: false,
 
                 cursor_handle,
@@ -1075,6 +1095,7 @@ impl X11Client {
                 // Set last scroll values to `None` so that a large delta isn't created if scrolling is done outside the window (the valuator is global)
                 reset_all_pointer_device_scroll_positions(&mut state.pointer_device_states);
                 state.keyboard_focused_window = None;
+                state.pressed_keys.clear();
                 if let Some(compose_state) = state.compose_state.as_mut() {
                     compose_state.reset();
                 }
@@ -1199,11 +1220,14 @@ impl X11Client {
                     }
                     keystroke
                 };
+                // With detectable auto-repeat, a repeat is a second press with no release.
+                let is_held = !state.pressed_keys.insert(event.detail);
                 drop(state);
                 window.handle_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
                     keystroke,
-                    is_held: false,
+                    is_held,
                     prefer_character_input: false,
+                    physical_key: physical_key_from_xkb(event.detail.into()),
                 }));
             }
             Event::KeyRelease(event) => {
@@ -1225,8 +1249,12 @@ impl X11Client {
 
                     keystroke
                 };
+                state.pressed_keys.remove(&event.detail);
                 drop(state);
-                window.handle_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }));
+                window.handle_input(PlatformInput::KeyUp(gpui::KeyUpEvent {
+                    keystroke,
+                    physical_key: physical_key_from_xkb(event.detail.into()),
+                }));
             }
             Event::XinputButtonPress(event) => {
                 let window = self.get_window(event.event)?;

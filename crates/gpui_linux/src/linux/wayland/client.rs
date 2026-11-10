@@ -91,7 +91,7 @@ use crate::linux::{
     DOUBLE_CLICK_INTERVAL, LinuxCommon, LinuxKeyboardLayout, PIPE_READ_TIMEOUT, SCROLL_LINES,
     capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state, is_within_click_distance,
     keystroke_from_xkb, keystroke_underlying_dead_key, modifiers_from_xkb, new_xkb_context,
-    open_uri_internal, read_fd_with_timeout, reveal_path_internal,
+    open_uri_internal, physical_key_from_xkb, read_fd_with_timeout, reveal_path_internal,
     wayland::{
         clipboard::{Clipboard, DataOffer, FILE_LIST_MIME_TYPE, TEXT_MIME_TYPES},
         cursor::Cursor,
@@ -2194,6 +2194,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                             keystroke: keystroke.clone(),
                             is_held: false,
                             prefer_character_input: false,
+                            physical_key: physical_key_from_xkb(keycode),
                         });
 
                         state.repeat.current_id += 1;
@@ -2209,6 +2210,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                                     keystroke,
                                     is_held: true,
                                     prefer_character_input: false,
+                                    physical_key: physical_key_from_xkb(keycode),
                                 });
                                 let this = this.clone();
                                 move |event_timestamp, _metadata, _| {
@@ -2242,6 +2244,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                     wl_keyboard::KeyState::Released if !keysym.is_modifier_key() => {
                         let input = PlatformInput::KeyUp(KeyUpEvent {
                             keystroke: keystroke_from_xkb(keymap_state, state.modifiers, keycode),
+                            physical_key: physical_key_from_xkb(keycode),
                         });
 
                         if state.repeat.current_keycode == Some(keycode) {
@@ -2298,6 +2301,7 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                             },
                             is_held: false,
                             prefer_character_input: false,
+                            physical_key: None,
                         }));
                     } else {
                         window.handle_ime(ImeInput::InsertText(commit_text));
