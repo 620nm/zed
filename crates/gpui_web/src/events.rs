@@ -25,6 +25,7 @@ pub struct WebEventListeners {
 pub(crate) struct EventListenerHandle {
     target: web_sys::EventTarget,
     event_name: &'static str,
+    capture: bool,
     closure: Closure<dyn FnMut(JsValue)>,
 }
 
@@ -41,6 +42,30 @@ impl EventListenerHandle {
         Self {
             target: target.clone(),
             event_name,
+            capture: false,
+            closure,
+        }
+    }
+
+    /// Registers for the capture phase, so the handler sees the event before
+    /// any listener on the path to its target can stop it.
+    fn add_capture(
+        target: &web_sys::EventTarget,
+        event_name: &'static str,
+        handler: impl FnMut(JsValue) + 'static,
+    ) -> Self {
+        let closure = Closure::<dyn FnMut(JsValue)>::new(handler);
+        target
+            .add_event_listener_with_callback_and_bool(
+                event_name,
+                closure.as_ref().unchecked_ref(),
+                true,
+            )
+            .ok();
+        Self {
+            target: target.clone(),
+            event_name,
+            capture: true,
             closure,
         }
     }
@@ -69,6 +94,7 @@ impl EventListenerHandle {
         Self {
             target: target.clone(),
             event_name,
+            capture: false,
             closure,
         }
     }
@@ -77,9 +103,10 @@ impl EventListenerHandle {
 impl Drop for EventListenerHandle {
     fn drop(&mut self) {
         self.target
-            .remove_event_listener_with_callback(
+            .remove_event_listener_with_callback_and_bool(
                 self.event_name,
                 self.closure.as_ref().unchecked_ref(),
+                self.capture,
             )
             .ok();
     }
@@ -158,6 +185,7 @@ impl WebWindowInner {
             self.register_drop(),
             self.register_key_down(),
             self.register_key_up(),
+            self.register_key_up_elsewhere(),
             self.register_before_input(),
             self.register_input(),
             self.register_paste(),
@@ -748,11 +776,15 @@ impl WebWindowInner {
                 key_char: key_char.clone(),
             };
 
+            let physical_key = PhysicalKey::from_code(&event.code());
+            if let Some(physical_key) = physical_key {
+                this.keys_down.borrow_mut().insert(physical_key);
+            }
             let result = this.dispatch_input(PlatformInput::KeyDown(KeyDownEvent {
                 keystroke,
                 is_held,
                 prefer_character_input: false,
-                physical_key: PhysicalKey::from_code(&event.code()),
+                physical_key,
             }));
 
             if let Some(result) = result {
@@ -788,41 +820,71 @@ impl WebWindowInner {
         let this = Rc::clone(self);
         self.listen_input("keyup", move |event: JsValue| {
             let event: web_sys::KeyboardEvent = event.unchecked_into();
-
-            let modifiers = modifiers_from_keyboard_event(&event, this.is_mac);
-            let capslock = capslock_from_keyboard_event(&event);
-
-            if this.update_modifiers(modifiers, capslock) {
-                this.dispatch_input(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
-                    modifiers,
-                    capslock,
-                }));
-            }
-
-            let key = dom_key_to_gpui_key(&event);
-
-            if is_modifier_only_key(&key) {
-                return;
-            }
-
-            let key_char = compute_key_char(&event, &key, &modifiers);
-
-            let keystroke = Keystroke {
-                modifiers,
-                key,
-                key_char,
-            };
-
-            let result = this.dispatch_input(PlatformInput::KeyUp(KeyUpEvent {
-                keystroke,
-                physical_key: PhysicalKey::from_code(&event.code()),
-            }));
-            if let Some(result) = result {
+            if let Some(result) = this.dispatch_key_up(&event) {
                 if !result.propagate {
                     event.prevent_default();
                 }
             }
         })
+    }
+
+    /// A key pressed in the window and released after focus moved elsewhere in
+    /// the page (a click on page content outside the canvas, say) sends its
+    /// `keyup` to that element, not to the hidden input, while the page keeps
+    /// focus and the window stays active. Watch the whole page for the release
+    /// of a key the window saw go down, so it is not reported as held forever.
+    fn register_key_up_elsewhere(self: &Rc<Self>) -> EventListenerHandle {
+        let this = Rc::clone(self);
+        EventListenerHandle::add_capture(
+            self.browser_window.as_ref(),
+            "keyup",
+            move |event: JsValue| {
+                let event: web_sys::KeyboardEvent = event.unchecked_into();
+                let at_input = event
+                    .target()
+                    .is_some_and(|target| target == *this.ime_mirror.event_target());
+                let was_down = PhysicalKey::from_code(&event.code())
+                    .is_some_and(|key| this.keys_down.borrow().contains(&key));
+                if !at_input && was_down {
+                    this.dispatch_key_up(&event);
+                }
+            },
+        )
+    }
+
+    fn dispatch_key_up(&self, event: &web_sys::KeyboardEvent) -> Option<DispatchEventResult> {
+        let modifiers = modifiers_from_keyboard_event(event, self.is_mac);
+        let capslock = capslock_from_keyboard_event(event);
+
+        if self.update_modifiers(modifiers, capslock) {
+            self.dispatch_input(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                modifiers,
+                capslock,
+            }));
+        }
+
+        let key = dom_key_to_gpui_key(event);
+
+        if is_modifier_only_key(&key) {
+            return None;
+        }
+
+        let key_char = compute_key_char(event, &key, &modifiers);
+
+        let keystroke = Keystroke {
+            modifiers,
+            key,
+            key_char,
+        };
+
+        let physical_key = PhysicalKey::from_code(&event.code());
+        if let Some(physical_key) = physical_key {
+            self.keys_down.borrow_mut().remove(&physical_key);
+        }
+        self.dispatch_input(PlatformInput::KeyUp(KeyUpEvent {
+            keystroke,
+            physical_key,
+        }))
     }
 
     /// Imports IME edits from the hidden input into the app.
