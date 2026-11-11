@@ -1,4 +1,7 @@
-use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext};
+use crate::{
+    CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuSurfaceFrame,
+    WgpuSurfaceProducer,
+};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
@@ -84,6 +87,9 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
+    /// `fs_surface`'s source kind (see `SurfaceParams` in `shaders.wgsl`).
+    kind: u32,
+    pad: [u32; 3],
 }
 
 #[repr(C)]
@@ -132,7 +138,6 @@ struct WgpuPipelines {
     mono_sprites: wgpu::RenderPipeline,
     subpixel_sprites: Option<wgpu::RenderPipeline>,
     poly_sprites: wgpu::RenderPipeline,
-    #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
 }
 
@@ -194,6 +199,8 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
+    /// One `SurfaceParams` uniform per custom surface drawn in a frame, reused.
+    surface_params: Vec<wgpu::Buffer>,
 }
 
 struct CachedTextureBindGroup {
@@ -1377,6 +1384,7 @@ impl WgpuRendererCore {
                 path_intermediate_view: None,
                 path_msaa_texture: None,
                 path_msaa_view: None,
+                surface_params: Vec::new(),
             },
             atlas,
             path_globals_offset,
@@ -1528,6 +1536,7 @@ impl WgpuRendererCore {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("main_encoder"),
                 });
+        let surface_bind_groups = self.produce_surfaces(scene, &mut encoder);
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1633,9 +1642,16 @@ impl WgpuRendererCore {
                             &mut pass,
                         )?;
                     }
-                    // Surfaces are macOS-only for video playback and are not
-                    // implemented by the WGPU renderer.
-                    PrimitiveBatch::Surfaces(_surfaces) => {}
+                    // Custom surfaces only; video buffers are drawn on macOS.
+                    PrimitiveBatch::Surfaces(range) => {
+                        let resources = self.resources();
+                        for bind_group in surface_bind_groups[range].iter().flatten() {
+                            pass.set_pipeline(&resources.pipelines.surfaces);
+                            pass.set_bind_group(0, &resources.globals_bind_group, &[]);
+                            pass.set_bind_group(1, bind_group, &[]);
+                            pass.draw(0..4, 0..1);
+                        }
+                    }
                 }
             }
         }
@@ -1645,6 +1661,92 @@ impl WgpuRendererCore {
             .queue
             .submit(std::iter::once(encoder.finish()));
         Ok(submission)
+    }
+
+    /// Ask each custom surface's producer for its texture, recording its
+    /// commands ahead of the main pass; one bind group per drawable surface.
+    fn produce_surfaces(
+        &mut self,
+        scene: &Scene,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Vec<Option<wgpu::BindGroup>> {
+        let resources = &mut self.resources;
+        let mut bind_groups = Vec::with_capacity(scene.surfaces.len());
+        for (index, surface) in scene.surfaces.iter().enumerate() {
+            #[allow(irrefutable_let_patterns)]
+            let gpui::SurfaceSource::Custom(custom) = &surface.source else {
+                bind_groups.push(None);
+                continue;
+            };
+            let size = Size {
+                width: DevicePixels(surface.bounds.size.width.0.round() as i32),
+                height: DevicePixels(surface.bounds.size.height.0.round() as i32),
+            };
+            let texture = custom
+                .downcast_ref::<WgpuSurfaceProducer>()
+                .filter(|_| size.width.0 > 0 && size.height.0 > 0)
+                .and_then(|producer| {
+                    producer.produce(WgpuSurfaceFrame {
+                        device: &resources.device,
+                        queue: &resources.queue,
+                        encoder: &mut *encoder,
+                        size,
+                    })
+                });
+            let Some(texture) = texture else {
+                bind_groups.push(None);
+                continue;
+            };
+            if resources.surface_params.len() <= index {
+                resources.surface_params.resize_with(index + 1, || {
+                    resources.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("surface_params"),
+                        size: std::mem::size_of::<SurfaceParams>() as u64,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    })
+                });
+            }
+            let params = SurfaceParams {
+                bounds: surface.bounds.into(),
+                content_mask: surface.content_mask.bounds.into(),
+                kind: if texture.format.has_srgb_suffix() {
+                    2
+                } else {
+                    1
+                },
+                pad: [0; 3],
+            };
+            let buffer = &resources.surface_params[index];
+            resources
+                .queue
+                .write_buffer(buffer, 0, bytemuck::bytes_of(&params));
+            bind_groups.push(Some(resources.device.create_bind_group(
+                &wgpu::BindGroupDescriptor {
+                    label: Some("surface_bind_group"),
+                    layout: &resources.bind_group_layouts.surfaces,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&texture.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&texture.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(&resources.atlas_sampler),
+                        },
+                    ],
+                },
+            )));
+        }
+        bind_groups
     }
 
     fn write_instances(

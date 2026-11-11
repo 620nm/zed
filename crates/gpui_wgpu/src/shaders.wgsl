@@ -1315,6 +1315,12 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
 struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
+    // 0: Y + CbCr planes; 1: RGBA as stored; 2: RGBA from an sRGB view (re-encoded).
+    kind: u32,
+    // A uniform's size must be a multiple of 16 on downlevel (WebGL2) devices.
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
 }
 
 @group(1) @binding(0) var<uniform> surface_locals: SurfaceParams;
@@ -1351,6 +1357,13 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
+    }
+
+    if (surface_locals.kind != 0u) {
+        // Sampling an sRGB view decodes; re-encode so the bytes land as an image's would.
+        let texel = textureSampleLevel(t_y, s_surface, input.texture_position, 0.0);
+        let rgb = select(texel.rgb, linear_to_srgb(texel.rgb), surface_locals.kind == 2u);
+        return blend_color(vec4<f32>(rgb, texel.a), 1.0);
     }
 
     let y_cb_cr = vec4<f32>(
