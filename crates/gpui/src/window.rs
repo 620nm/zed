@@ -5512,6 +5512,7 @@ impl Window {
             order: 0,
             bounds,
             content_mask,
+            opacity: self.element_opacity(),
             source: crate::SurfaceSource::Surface(image_buffer),
         });
     }
@@ -5529,6 +5530,7 @@ impl Window {
             order: 0,
             bounds,
             content_mask,
+            opacity: self.element_opacity(),
             source: crate::SurfaceSource::Custom(surface),
         });
     }

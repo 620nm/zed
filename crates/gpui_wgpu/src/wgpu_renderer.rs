@@ -89,7 +89,8 @@ struct SurfaceParams {
     content_mask: PodBounds,
     /// `fs_surface`'s source kind (see `SurfaceParams` in `shaders.wgsl`).
     kind: u32,
-    pad: [u32; 3],
+    opacity: f32,
+    pad: [u32; 2],
 }
 
 #[repr(C)]
@@ -1715,7 +1716,8 @@ impl WgpuRendererCore {
                 } else {
                     1
                 },
-                pad: [0; 3],
+                opacity: surface.opacity,
+                pad: [0; 2],
             };
             let buffer = &resources.surface_params[index];
             resources

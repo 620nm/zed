@@ -2098,6 +2098,7 @@ mod tests {
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
+            opacity: 1.0,
             source: gpui::SurfaceSource::Surface(image_buffer.clone()),
         });
         drop(image_buffer);
