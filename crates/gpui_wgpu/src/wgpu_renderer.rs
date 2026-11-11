@@ -1,6 +1,7 @@
 use crate::{
     CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuSurfaceFrame,
     WgpuSurfaceProducer,
+    wgpu_surface::{SurfaceTarget, surface_target},
 };
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
@@ -1664,13 +1665,15 @@ impl WgpuRendererCore {
         Ok(submission)
     }
 
-    /// Ask each custom surface's producer for its texture, recording its
-    /// commands ahead of the main pass; one bind group per drawable surface.
+    /// Ask each custom surface's producer for a texture of its visible part,
+    /// recording its commands ahead of the main pass; one bind group per
+    /// drawable surface.
     fn produce_surfaces(
         &mut self,
         scene: &Scene,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Vec<Option<wgpu::BindGroup>> {
+        let max_texture_size = self.max_texture_size;
         let resources = &mut self.resources;
         let mut bind_groups = Vec::with_capacity(scene.surfaces.len());
         for (index, surface) in scene.surfaces.iter().enumerate() {
@@ -1679,18 +1682,28 @@ impl WgpuRendererCore {
                 bind_groups.push(None);
                 continue;
             };
-            let size = Size {
-                width: DevicePixels(surface.bounds.size.width.0.round() as i32),
-                height: DevicePixels(surface.bounds.size.height.0.round() as i32),
+            let Some(SurfaceTarget {
+                bounds,
+                visible,
+                size,
+            }) = surface_target(
+                surface.bounds,
+                surface.content_mask.bounds,
+                max_texture_size,
+            )
+            else {
+                bind_groups.push(None);
+                continue;
             };
             let texture = custom
                 .downcast_ref::<WgpuSurfaceProducer>()
-                .filter(|_| size.width.0 > 0 && size.height.0 > 0)
                 .and_then(|producer| {
                     producer.produce(WgpuSurfaceFrame {
                         device: &resources.device,
                         queue: &resources.queue,
                         encoder: &mut *encoder,
+                        bounds,
+                        visible,
                         size,
                     })
                 });
@@ -1709,7 +1722,9 @@ impl WgpuRendererCore {
                 });
             }
             let params = SurfaceParams {
-                bounds: surface.bounds.into(),
+                bounds: visible
+                    .map(|coordinate| ScaledPixels(coordinate.0 as f32))
+                    .into(),
                 content_mask: surface.content_mask.bounds.into(),
                 kind: if texture.format.has_srgb_suffix() {
                     2
