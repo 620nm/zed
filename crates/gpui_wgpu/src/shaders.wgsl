@@ -1317,10 +1317,10 @@ struct SurfaceParams {
     content_mask: Bounds,
     // 0: Y + CbCr planes; 1: RGBA as stored; 2: RGBA from an sRGB view (re-encoded).
     kind: u32,
+    opacity: f32,
     // A uniform's size must be a multiple of 16 on downlevel (WebGL2) devices.
     pad0: u32,
     pad1: u32,
-    pad2: u32,
 }
 
 @group(1) @binding(0) var<uniform> surface_locals: SurfaceParams;
@@ -1363,7 +1363,7 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
         // Sampling an sRGB view decodes; re-encode so the bytes land as an image's would.
         let texel = textureSampleLevel(t_y, s_surface, input.texture_position, 0.0);
         let rgb = select(texel.rgb, linear_to_srgb(texel.rgb), surface_locals.kind == 2u);
-        return blend_color(vec4<f32>(rgb, texel.a), 1.0);
+        return blend_color(vec4<f32>(rgb, texel.a), surface_locals.opacity);
     }
 
     let y_cb_cr = vec4<f32>(

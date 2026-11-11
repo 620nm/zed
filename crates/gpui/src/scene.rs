@@ -769,6 +769,8 @@ pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    /// The element opacity the surface was painted with.
+    pub opacity: f32,
     /// What the renderer draws; a renderer skips sources it cannot draw.
     pub source: crate::SurfaceSource,
 }
