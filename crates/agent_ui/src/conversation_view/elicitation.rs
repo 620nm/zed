@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use acp_thread::{Elicitation, ElicitationEntryId, ElicitationStatus};
 use agent_client_protocol::v2::schema as acp;
 use collections::{HashMap, HashSet};

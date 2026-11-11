@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use crate::{
     CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuSurfaceProducer,
     wgpu_surface::{SurfaceTarget, surface_target},

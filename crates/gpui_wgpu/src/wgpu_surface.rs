@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 //! Caller-rendered wgpu content in GPUI's scene. A `WgpuSurfaceProducer`,
 //! painted with `gpui::surface`, is asked for a texture each time the window's
 //! renderer draws a frame. It renders on the renderer's own device, into an

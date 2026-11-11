@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 mod boundary;
 mod duplicate;
 mod object;

@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use acp_thread::{
     AcpThread, AcpThreadEvent, AgentThreadEntry, AssistantMessage, AssistantMessageChunk,
     AuthRequired, ElicitationEntryId, ElicitationStatus, ElicitationStore, ForegroundActivity,

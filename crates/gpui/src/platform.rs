@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 mod app_menu;
 mod keyboard;
 mod keystroke;

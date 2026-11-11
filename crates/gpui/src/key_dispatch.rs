@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 //! KeyDispatch is where GPUI deals with binding actions to key events.
 //!
 //! The key pieces to making a key binding work are to define an action,

@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 mod persistence;
 pub mod terminal_element;
 pub mod terminal_panel;

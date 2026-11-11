@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use anyhow::{Context as _, anyhow};
 use ashpd::WindowIdentifier;
 use calloop::{

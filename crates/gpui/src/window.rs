@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 #[cfg(feature = "profiler")]
 use crate::DebugFrameOverlayMode;
 #[cfg(any(feature = "inspector", debug_assertions))]
