@@ -14,9 +14,9 @@ use crate::{
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
     Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
     Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
-    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
+    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, PhysicalKey,
+    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
+    Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
     SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
     StrikethroughStyle, Style, SubpixelSprite, Subscription, SystemWindowTab,
@@ -1266,6 +1266,7 @@ pub struct Window {
     mouse_hit_test: HitTest,
     modifiers: Modifiers,
     capslock: Capslock,
+    pressed_keys: FxHashSet<PhysicalKey>,
     scale_factor: f32,
     pub(crate) bounds_observers: SingleSubscriberSet<AnyObserver>,
     appearance: WindowAppearance,
@@ -2184,6 +2185,10 @@ impl Window {
                 handle
                     .update(&mut cx, |_, window, cx| {
                         window.active.set(active);
+                        if !active {
+                            // An inactive window is not told when keys are released.
+                            window.pressed_keys.clear();
+                        }
                         window.modifiers = window.platform_window.modifiers();
                         window.capslock = window.platform_window.capslock();
                         window
@@ -2389,6 +2394,7 @@ impl Window {
             mouse_hit_test: HitTest::default(),
             modifiers,
             capslock,
+            pressed_keys: FxHashSet::default(),
             scale_factor,
             bounds_observers: SingleSubscriberSet::new(),
             appearance,
@@ -3636,6 +3642,18 @@ impl Window {
     /// The current state of the keyboard's modifiers
     pub fn modifiers(&self) -> Modifiers {
         self.modifiers
+    }
+
+    /// Whether the key at this position is down, from the key events this window
+    /// received while active. Modifier-only keys are read through [`Self::modifiers`].
+    pub fn is_key_pressed(&self, key: PhysicalKey) -> bool {
+        self.pressed_keys.contains(&key)
+    }
+
+    /// Every key position that is down, as [`Self::is_key_pressed`] reports it.
+    /// Emptied when the window stops being active.
+    pub fn pressed_keys(&self) -> impl Iterator<Item = PhysicalKey> + '_ {
+        self.pressed_keys.iter().copied()
     }
 
     /// Returns true if the last input event was keyboard-based (key press, tab navigation, etc.)
@@ -6020,7 +6038,18 @@ impl Window {
                 self.mouse_position = back.start_position;
                 PlatformInput::BackGesture(back)
             }
-            PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
+            PlatformInput::KeyDown(key_down) => {
+                if let Some(key) = key_down.physical_key {
+                    self.pressed_keys.insert(key);
+                }
+                PlatformInput::KeyDown(key_down)
+            }
+            PlatformInput::KeyUp(key_up) => {
+                if let Some(key) = key_up.physical_key {
+                    self.pressed_keys.remove(&key);
+                }
+                PlatformInput::KeyUp(key_up)
+            }
         };
 
         if let Some(any_mouse_event) = event.mouse_event() {
@@ -8199,12 +8228,12 @@ mod tests {
         AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, Bounds, ContentMask,
         Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
         ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, InputEvent as _,
-        InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton,
-        MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, PlatformInput, Point,
-        Render, RequestFrameOptions, ScaledPixels, StatefulInteractiveElement as _, Styled,
-        TestAppContext, ThermalState, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline,
-        UnderlineStyle, Window, WindowAppearance, WindowOptions, canvas, div, hsla, point, px,
-        size,
+        InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke, LongPressEvent,
+        MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PhysicalKey,
+        Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
+        StatefulInteractiveElement as _, Styled, TestAppContext, ThermalState, TouchDragEvent,
+        TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance,
+        WindowOptions, canvas, div, hsla, point, px, size,
     };
 
     #[gpui::test]
@@ -8246,6 +8275,36 @@ mod tests {
             assert_eq!(handles.handles.len(), 0);
             assert!(handles.dropped_handles.is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn test_pressed_keys_follow_key_events_and_clear_on_deactivation(cx: &mut TestAppContext) {
+        let (_view, cx) = cx.add_window_view(|_, _| EmptyView);
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        let keystroke = Keystroke::parse("z").expect("valid keystroke");
+        let down = |is_held| KeyDownEvent {
+            keystroke: keystroke.clone(),
+            physical_key: Some(PhysicalKey::KeyW),
+            is_held,
+            prefer_character_input: false,
+        };
+        let pressed = |cx: &mut crate::VisualTestContext| {
+            cx.update(|window, _| window.pressed_keys().collect::<Vec<_>>())
+        };
+
+        cx.simulate_event(down(false));
+        cx.simulate_event(down(true));
+        assert_eq!(pressed(cx), [PhysicalKey::KeyW]);
+        cx.simulate_event(KeyUpEvent {
+            keystroke: keystroke.clone(),
+            physical_key: Some(PhysicalKey::KeyW),
+        });
+        assert_eq!(pressed(cx), Vec::<PhysicalKey>::new());
+
+        cx.simulate_event(down(false));
+        cx.deactivate_window();
+        assert_eq!(pressed(cx), Vec::<PhysicalKey>::new());
     }
 
     #[gpui::test]
