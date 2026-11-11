@@ -2829,6 +2829,295 @@ mod tests {
         Ok(())
     }
 
+    /// What a producer was handed for one frame.
+    #[cfg(target_os = "linux")]
+    #[derive(Debug, PartialEq)]
+    struct SurfaceFrameInfo {
+        bounds: Bounds<DevicePixels>,
+        visible: Bounds<DevicePixels>,
+        size: Size<DevicePixels>,
+    }
+
+    /// A producer that clears a `size`d sRGB texture to linear 0.214 green,
+    /// stored as byte 128, recording each frame it is handed into `frames`.
+    #[cfg(target_os = "linux")]
+    fn green_surface(
+        frames: std::rc::Rc<std::cell::RefCell<Vec<SurfaceFrameInfo>>>,
+    ) -> gpui::CustomSurface {
+        let mut target: Option<wgpu::TextureView> = None;
+        crate::WgpuSurfaceProducer::new(move |frame| {
+            frames.borrow_mut().push(SurfaceFrameInfo {
+                bounds: frame.bounds,
+                visible: frame.visible,
+                size: frame.size,
+            });
+            let view = target
+                .get_or_insert_with(|| {
+                    create_surface_texture(frame.device, frame.size, true)
+                        .create_view(&wgpu::TextureViewDescriptor::default())
+                })
+                .clone();
+            clear_view(frame.encoder, &view);
+            Some(crate::WgpuSurfaceTexture {
+                view,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            })
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn create_surface_texture(
+        device: &wgpu::Device,
+        size: Size<DevicePixels>,
+        render_attachment: bool,
+    ) -> wgpu::Texture {
+        let mut usage = wgpu::TextureUsages::TEXTURE_BINDING;
+        if render_attachment {
+            usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
+        }
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test surface"),
+            size: wgpu::Extent3d {
+                width: size.width.0 as u32,
+                height: size.height.0 as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage,
+            view_formats: &[],
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn clear_view(encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("test surface clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.214_041_14,
+                        b: 0.0,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    fn scaled_bounds(x: f32, width: f32) -> Bounds<ScaledPixels> {
+        Bounds {
+            origin: Point {
+                x: x.into(),
+                y: 0.0.into(),
+            },
+            size: Size {
+                width: width.into(),
+                height: 32.0.into(),
+            },
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn device_bounds(x: i32, y: i32, width: i32, height: i32) -> Bounds<DevicePixels> {
+        Bounds {
+            origin: Point {
+                x: DevicePixels(x),
+                y: DevicePixels(y),
+            },
+            size: device_size(width, height),
+        }
+    }
+
+    /// A custom surface draws in paint order between two quads, clipped to its
+    /// content mask, with an sRGB source re-encoded to the stored bytes, and its
+    /// producer renders only the visible part.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_renderer_draws_custom_surface_in_order() -> anyhow::Result<()> {
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut scene = Scene::default();
+        scene.insert_primitive(solid_quad(0.0, 0.0, 32.0, 32.0, gpui::red()));
+        scene.insert_primitive(gpui::PaintSurface {
+            order: 0,
+            bounds: scaled_bounds(16.0, 32.0),
+            content_mask: ContentMask {
+                bounds: scaled_bounds(16.0, 24.0),
+            },
+            opacity: 1.0,
+            source: gpui::SurfaceSource::Custom(green_surface(frames.clone())),
+        });
+        scene.insert_primitive(solid_quad(28.0, 0.0, 8.0, 32.0, gpui::blue()));
+        scene.finish();
+
+        let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+        assert_eq!(
+            *frames.borrow(),
+            [SurfaceFrameInfo {
+                bounds: device_bounds(16, 0, 32, 32),
+                visible: device_bounds(16, 0, 24, 32),
+                size: device_size(24, 32),
+            }]
+        );
+        assert_pixel(&image, 8, 16, RED);
+        assert_pixel(&image, 20, 16, [0, 128, 0, 255]);
+        assert_pixel(&image, 32, 16, BLUE);
+        assert_pixel(&image, 38, 16, [0, 128, 0, 255]);
+        let clipped = image.get_pixel(44, 16).0;
+        assert_eq!(
+            clipped[1], 0,
+            "pixel (44, 16) outside the content mask was {clipped:?}"
+        );
+        Ok(())
+    }
+
+    /// A custom surface painted at half opacity blends with what is under it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_renderer_applies_custom_surface_opacity() -> anyhow::Result<()> {
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut scene = Scene::default();
+        scene.insert_primitive(solid_quad(0.0, 0.0, 64.0, 32.0, gpui::red()));
+        scene.insert_primitive(gpui::PaintSurface {
+            order: 0,
+            bounds: scaled_bounds(16.0, 32.0),
+            content_mask: ContentMask {
+                bounds: scaled_bounds(16.0, 32.0),
+            },
+            opacity: 0.5,
+            source: gpui::SurfaceSource::Custom(green_surface(frames)),
+        });
+        scene.finish();
+
+        let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+        assert_pixel(&image, 8, 16, RED);
+        let [red, green, blue, _] = image.get_pixel(32, 16).0;
+        assert!(
+            red.abs_diff(128) <= 3 && green.abs_diff(64) <= 3 && blue <= 3,
+            "pixel (32, 16) was {:?}, expected half red over half green",
+            [red, green, blue]
+        );
+        Ok(())
+    }
+
+    /// A producer whose commands fail validation loses only its surface: GPUI's
+    /// frames keep drawing without errors, and the producer stops being called.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_renderer_isolates_failing_custom_surface() -> anyhow::Result<()> {
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let producer = {
+            let calls = calls.clone();
+            crate::WgpuSurfaceProducer::new(move |frame| {
+                calls.set(calls.get() + 1);
+                // Rendering to a texture without RENDER_ATTACHMENT usage is invalid.
+                let view = create_surface_texture(frame.device, frame.size, false)
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                clear_view(frame.encoder, &view);
+                Some(crate::WgpuSurfaceTexture {
+                    view,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                })
+            })
+        };
+        let mut scene = Scene::default();
+        scene.insert_primitive(solid_quad(0.0, 0.0, 64.0, 32.0, gpui::red()));
+        scene.insert_primitive(gpui::PaintSurface {
+            order: 0,
+            bounds: scaled_bounds(16.0, 32.0),
+            content_mask: ContentMask {
+                bounds: scaled_bounds(16.0, 32.0),
+            },
+            opacity: 1.0,
+            source: gpui::SurfaceSource::Custom(producer),
+        });
+        scene.insert_primitive(solid_quad(56.0, 0.0, 8.0, 32.0, gpui::blue()));
+        scene.finish();
+
+        for _ in 0..12 {
+            let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+            assert_pixel(&image, 8, 16, RED);
+            assert_pixel(&image, 32, 16, RED);
+            assert_pixel(&image, 60, 16, BLUE);
+        }
+        renderer.check_gpu_errors()?;
+        assert_eq!(calls.get(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn surface_target_clips_and_fits_the_texture_limit() {
+        let scaled = |x: f32, y: f32, width: f32, height: f32| Bounds {
+            origin: Point {
+                x: ScaledPixels(x),
+                y: ScaledPixels(y),
+            },
+            size: Size {
+                width: ScaledPixels(width),
+                height: ScaledPixels(height),
+            },
+        };
+        let device = |x: i32, y: i32, width: i32, height: i32| Bounds {
+            origin: Point {
+                x: DevicePixels(x),
+                y: DevicePixels(y),
+            },
+            size: Size {
+                width: DevicePixels(width),
+                height: DevicePixels(height),
+            },
+        };
+        let size = |width: i32, height: i32| Size {
+            width: DevicePixels(width),
+            height: DevicePixels(height),
+        };
+
+        assert_eq!(
+            crate::wgpu_surface::surface_target(
+                scaled(0.5, 0.25, 10.0, 10.0),
+                scaled(0.0, 0.0, 100.0, 100.0),
+                64,
+            ),
+            Some(crate::wgpu_surface::SurfaceTarget {
+                bounds: device(0, 0, 11, 11),
+                visible: device(0, 0, 11, 11),
+                size: size(11, 11)
+            })
+        );
+        assert_eq!(
+            crate::wgpu_surface::surface_target(
+                scaled(-10.0, 0.0, 300.0, 50.0),
+                scaled(0.0, 0.0, 200.0, 100.0),
+                100,
+            ),
+            Some(crate::wgpu_surface::SurfaceTarget {
+                bounds: device(-10, 0, 300, 50),
+                visible: device(0, 0, 200, 50),
+                size: size(100, 25)
+            })
+        );
+        assert_eq!(
+            crate::wgpu_surface::surface_target(
+                scaled(0.0, 0.0, 10.0, 10.0),
+                scaled(20.0, 0.0, 10.0, 10.0),
+                64,
+            ),
+            None
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn headless_renderer_captures_each_requested_size() -> anyhow::Result<()> {
