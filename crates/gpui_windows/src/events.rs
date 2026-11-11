@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use std::{cell::Cell, rc::Rc, sync::atomic::Ordering};
 
 use anyhow::Context as _;

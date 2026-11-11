@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use super::*;
 // use crate::undo::tests::{build_create_operation, build_rename_operation};
 use collections::HashSet;

@@ -1,0 +1,11 @@
+This repository is a fork of Zed
+(https://github.com/zed-industries/zed).
+
+Zed's license files at this root are unchanged
+and apply to every file as before.
+
+Files changed in this fork carry the line
+  "Modified in the 620nm/zed fork; see NOTICE."
+The changes are the commits main..lunatic,
+summarized in LUNATIC-FORK.md. Each change is
+offered under the license of the file it is in.

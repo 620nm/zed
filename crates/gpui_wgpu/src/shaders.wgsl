@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 /* Functions useful for debugging:
 
 // A heat map color for debugging (blue -> cyan -> green -> yellow -> red).

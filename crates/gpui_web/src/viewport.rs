@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 //! Browser viewport and safe-area frame snapshots in canvas coordinates.
 //!
 //! Browser geometry is sampled before rendering, never by geometry getters.

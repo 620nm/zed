@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use crate::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId, ObjectFit,
     Pixels, Style, StyleRefinement, Styled, Window,

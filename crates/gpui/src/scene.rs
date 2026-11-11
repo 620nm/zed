@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 // todo("windows"): remove
 #![cfg_attr(windows, allow(dead_code))]
 

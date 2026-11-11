@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use crate::metal_atlas::MetalAtlas;
 use anyhow::{Context as _, Result};
 use block2::RcBlock;

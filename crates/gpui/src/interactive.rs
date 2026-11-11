@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use crate::{
     BackGestureEvent, Bounds, Capslock, Context, Empty, IntoElement, Keystroke, LongPressEvent,
     Modifiers, PhysicalKey, Pixels, Point, Render, TouchDragEvent, Window, point, seal::Sealed,

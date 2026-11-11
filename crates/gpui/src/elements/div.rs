@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 //! Div is the central, reusable element that most GPUI trees will be built from.
 //! It functions as a container for other elements, and provides a number of
 //! useful features for laying out and styling its children as well as binding

@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 mod cosmic_text_system;
 mod wgpu_atlas;
 mod wgpu_context;

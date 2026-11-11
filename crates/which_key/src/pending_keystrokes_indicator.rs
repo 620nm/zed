@@ -1,3 +1,4 @@
+// Modified in the 620nm/zed fork; see NOTICE.
 use gpui::{
     Action as _, Anchor, Animation, AnimationExt, App, Context, HoverListenerMode, InputPreference,
     KeybindingKeystroke, KeystrokeEvent, Render, ScrollHandle, Subscription, Task, Window,
