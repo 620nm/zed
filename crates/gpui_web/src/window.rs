@@ -5,16 +5,18 @@ use crate::events::{
 use crate::ime_mirror::ImeMirror;
 use crate::platform::WebWindowLifecycle;
 use crate::viewport::WebViewport;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::{cell::Cell, cell::RefCell, rc::Rc};
 
 use gpui::{
     AnyWindowHandle, Bounds, Capslock, Decorations, DevicePixels, DispatchEventResult,
-    FrameRequestSource, GpuSpecs, Modifiers, MouseButton, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
-    RequestFrameOptions, ResizeEdge, Scene, Size, TextInputConfiguration, TextInputStateChange,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
-    WindowDecorations, WindowInsets, WindowParams, WindowVisibility, px,
+    FrameRequestSource, GpuSpecs, Modifiers, MouseButton, PhysicalKey, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
+    PromptLevel, RequestFrameOptions, ResizeEdge, Scene, Size, TextInputConfiguration,
+    TextInputStateChange, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+    WindowControlArea, WindowControls, WindowDecorations, WindowInsets, WindowParams,
+    WindowVisibility, px,
 };
 use gpui_wgpu::{WgpuContext, WgpuRenderer, WgpuSurfaceConfig, wgpu};
 use wasm_bindgen::prelude::*;
@@ -73,6 +75,9 @@ pub(crate) struct WebWindowInner {
     /// synchronously from inside an input dispatch, and a `RefCell`
     /// double-borrow panic on wasm never unwinds, wedging the app.
     pub(crate) suppress_focus_status_events: Cell<bool>,
+    /// The physical keys whose key-down the window dispatched and whose key-up
+    /// it has not, while it is active.
+    pub(crate) keys_down: RefCell<HashSet<PhysicalKey>>,
     /// The visual viewport height when the current pointer gesture began.
     /// A mid-gesture change means the software keyboard opened or closed and
     /// reflowed the layout, so the release position no longer refers to what
@@ -222,6 +227,7 @@ impl WebWindow {
             notify_scale: Cell::new(false),
             is_composing: Cell::new(false),
             suppress_focus_status_events: Cell::new(false),
+            keys_down: RefCell::default(),
             gesture_start_visual_viewport_height: Cell::new(0.0),
             touch_tap_candidate: Cell::new(None),
             mql_handle: RefCell::new(None),
@@ -421,6 +427,9 @@ impl WebWindowInner {
 
     pub(crate) fn refresh_active_status(&self) {
         let active = document_is_active(&self.browser_window);
+        if !active {
+            self.keys_down.borrow_mut().clear();
+        }
         if std::mem::replace(&mut self.state.borrow_mut().is_active, active) != active {
             self.with_callback(
                 |callbacks| &mut callbacks.active_status_change,
