@@ -1,10 +1,21 @@
 //! Caller-rendered wgpu content in GPUI's scene. A `WgpuSurfaceProducer`,
 //! painted with `gpui::surface`, is asked for a texture each time the window's
-//! renderer draws a frame; it renders on the renderer's own device, into the
-//! frame's encoder, so its commands run before GPUI's pass in one submission.
+//! renderer draws a frame. It renders on the renderer's own device, into an
+//! encoder submitted just before GPUI's frame, so a validation error in its
+//! commands invalidates only its own submission and never GPUI's.
 
 use gpui::{Bounds, CustomSurface, DevicePixels, Point, ScaledPixels, Size};
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::RefCell,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, Waker},
+};
+
+/// Consecutive frames with a validation error after which a producer is no
+/// longer called.
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 /// What a producer is handed while the renderer records a frame.
 pub struct WgpuSurfaceFrame<'a> {
@@ -13,7 +24,7 @@ pub struct WgpuSurfaceFrame<'a> {
     pub device: &'a Arc<wgpu::Device>,
     /// The device's queue; buffer writes made here land before this frame.
     pub queue: &'a Arc<wgpu::Queue>,
-    /// This frame's encoder, ahead of GPUI's own render pass.
+    /// An encoder for the producer's commands, submitted before GPUI's frame.
     pub encoder: &'a mut wgpu::CommandEncoder,
     /// The surface's bounds in the window, in device pixels. Parts of them may
     /// be clipped away by an ancestor's content mask.
@@ -35,21 +46,96 @@ pub struct WgpuSurfaceTexture {
 }
 
 type Produce = dyn FnMut(WgpuSurfaceFrame<'_>) -> Option<WgpuSurfaceTexture>;
+type ErrorScopeResult = Pin<Box<dyn Future<Output = Option<wgpu::Error>>>>;
 
 /// Renders a surface's content on demand; `None` draws nothing this frame.
-pub struct WgpuSurfaceProducer(RefCell<Box<Produce>>);
+///
+/// Its work runs inside a validation error scope. A frame whose work raises an
+/// error is logged and not drawn, and after a few such frames in a row the
+/// producer is no longer called. Where the scope's result arrives later (the
+/// browser's WebGPU), the frames before it draws whatever the producer returned.
+pub struct WgpuSurfaceProducer(RefCell<ProducerState>);
+
+struct ProducerState {
+    produce: Box<Produce>,
+    pending_errors: Vec<ErrorScopeResult>,
+    consecutive_failures: u32,
+}
 
 impl WgpuSurfaceProducer {
     /// A surface source for `gpui::surface` that `produce` fills.
     pub fn new(
         produce: impl FnMut(WgpuSurfaceFrame<'_>) -> Option<WgpuSurfaceTexture> + 'static,
     ) -> CustomSurface {
-        CustomSurface::new(Self(RefCell::new(Box::new(produce))))
+        CustomSurface::new(Self(RefCell::new(ProducerState {
+            produce: Box::new(produce),
+            pending_errors: Vec::new(),
+            consecutive_failures: 0,
+        })))
     }
 
-    pub(crate) fn produce(&self, frame: WgpuSurfaceFrame<'_>) -> Option<WgpuSurfaceTexture> {
-        let mut produce = self.0.try_borrow_mut().ok()?;
-        produce(frame)
+    /// Runs the producer and submits its commands, unless it has failed too often.
+    pub(crate) fn produce(
+        &self,
+        device: &Arc<wgpu::Device>,
+        queue: &Arc<wgpu::Queue>,
+        bounds: Bounds<DevicePixels>,
+        visible: Bounds<DevicePixels>,
+        size: Size<DevicePixels>,
+    ) -> Option<WgpuSurfaceTexture> {
+        let mut state = self.0.try_borrow_mut().ok()?;
+        state.collect_errors();
+        if state.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+            return None;
+        }
+
+        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("custom_surface_encoder"),
+        });
+        let texture = (state.produce)(WgpuSurfaceFrame {
+            device,
+            queue,
+            encoder: &mut encoder,
+            bounds,
+            visible,
+            size,
+        });
+        queue.submit(std::iter::once(encoder.finish()));
+        state.pending_errors.push(Box::pin(error_scope.pop()));
+
+        let failures = state.consecutive_failures;
+        state.collect_errors();
+        if state.consecutive_failures > failures {
+            return None;
+        }
+        texture
+    }
+}
+
+impl ProducerState {
+    /// Counts the error scope results that have arrived, in submission order.
+    fn collect_errors(&mut self) {
+        let mut context = Context::from_waker(Waker::noop());
+        while let Some(result) = self.pending_errors.first_mut() {
+            let Poll::Ready(error) = result.as_mut().poll(&mut context) else {
+                break;
+            };
+            drop(self.pending_errors.remove(0));
+            let Some(error) = error else {
+                self.consecutive_failures = 0;
+                continue;
+            };
+            self.consecutive_failures += 1;
+            log::error!(
+                "custom surface producer failed (failure {} of {MAX_CONSECUTIVE_FAILURES}): {error}",
+                self.consecutive_failures
+            );
+            if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                log::error!("custom surface producer keeps failing; it is no longer drawn");
+                self.pending_errors.clear();
+            }
+        }
     }
 }
 

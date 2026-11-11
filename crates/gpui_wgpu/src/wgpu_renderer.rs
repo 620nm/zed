@@ -1,6 +1,5 @@
 use crate::{
-    CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuSurfaceFrame,
-    WgpuSurfaceProducer,
+    CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuSurfaceProducer,
     wgpu_surface::{SurfaceTarget, surface_target},
 };
 use anyhow::{Context as _, Result};
@@ -1531,6 +1530,7 @@ impl WgpuRendererCore {
                 )
             })?;
         self.prepare_texture_bind_groups(scene);
+        let surface_bind_groups = self.produce_surfaces(scene);
 
         let mut encoder =
             self.resources()
@@ -1538,7 +1538,6 @@ impl WgpuRendererCore {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("main_encoder"),
                 });
-        let surface_bind_groups = self.produce_surfaces(scene, &mut encoder);
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1666,13 +1665,9 @@ impl WgpuRendererCore {
     }
 
     /// Ask each custom surface's producer for a texture of its visible part,
-    /// recording its commands ahead of the main pass; one bind group per
-    /// drawable surface.
-    fn produce_surfaces(
-        &mut self,
-        scene: &Scene,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> Vec<Option<wgpu::BindGroup>> {
+    /// submitting its commands ahead of the frame; one bind group per drawable
+    /// surface.
+    fn produce_surfaces(&mut self, scene: &Scene) -> Vec<Option<wgpu::BindGroup>> {
         let max_texture_size = self.max_texture_size;
         let resources = &mut self.resources;
         let mut bind_groups = Vec::with_capacity(scene.surfaces.len());
@@ -1698,14 +1693,7 @@ impl WgpuRendererCore {
             let texture = custom
                 .downcast_ref::<WgpuSurfaceProducer>()
                 .and_then(|producer| {
-                    producer.produce(WgpuSurfaceFrame {
-                        device: &resources.device,
-                        queue: &resources.queue,
-                        encoder: &mut *encoder,
-                        bounds,
-                        visible,
-                        size,
-                    })
+                    producer.produce(&resources.device, &resources.queue, bounds, visible, size)
                 });
             let Some(texture) = texture else {
                 bind_groups.push(None);
