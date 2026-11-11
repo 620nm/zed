@@ -5849,6 +5849,7 @@ impl Window {
                 keystroke: keystroke.clone(),
                 is_held: false,
                 prefer_character_input: false,
+                physical_key: None,
             }),
             cx,
         );
@@ -6743,6 +6744,7 @@ impl Window {
                 keystroke: replay.keystroke.clone(),
                 is_held: false,
                 prefer_character_input: true,
+                physical_key: None,
             };
 
             cx.propagate_event = true;
@@ -9401,6 +9403,7 @@ mod tests {
                     keystroke: Keystroke::parse("down").expect("valid keystroke"),
                     is_held: false,
                     prefer_character_input: false,
+                    physical_key: None,
                 }),
                 cx,
             );

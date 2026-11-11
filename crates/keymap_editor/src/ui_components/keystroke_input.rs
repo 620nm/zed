@@ -1190,8 +1190,12 @@ mod tests {
             keystroke: keystroke.clone(),
             is_held: false,
             prefer_character_input: false,
+            physical_key: None,
         });
-        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke,
+            physical_key: None,
+        });
         cx.simulate_modifiers_change(Modifiers::none());
     }
 
