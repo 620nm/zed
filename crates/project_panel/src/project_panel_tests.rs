@@ -13489,6 +13489,7 @@ async fn test_file_drag_state_clears_before_window_handoff(cx: &mut TestAppConte
                     keystroke: Keystroke::parse("down").expect("valid keystroke"),
                     is_held: false,
                     prefer_character_input: false,
+                    physical_key: None,
                 }
                 .to_platform_input(),
                 cx,
