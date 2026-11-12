@@ -39,10 +39,10 @@ pub(crate) type PlatformScreenCaptureFrame =
     objc2_core_foundation::CFRetained<objc2_core_video::CVImageBuffer>;
 
 use crate::{
-    Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds, Corners,
-    DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Edges, ExternalDragPayload, Font,
-    FontId, FontMetrics, FontRun, ForegroundExecutor, GlyphId, GpuSpecs, Hsla, ImageSource, Keymap,
-    LineLayout, MissingGlyphSink, Pixels, PlatformGestures, PlatformInput, Point, Priority,
+    Action, AddedFonts, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds,
+    Corners, DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Edges, ExternalDragPayload,
+    Font, FontId, FontMetrics, FontRun, ForegroundExecutor, GlyphId, GpuSpecs, Hsla, ImageSource,
+    Keymap, LineLayout, MissingGlyphSink, Pixels, PlatformGestures, PlatformInput, Point, Priority,
     RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene, ShapedGlyph,
     ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task, Window, WindowControlArea,
     hash, point, px, size,
@@ -1588,7 +1588,7 @@ pub trait PlatformDispatcher: Send + Sync {
 
 #[expect(missing_docs)]
 pub trait PlatformTextSystem: Send + Sync {
-    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
+    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<AddedFonts>;
     /// Installs a nonblocking sink for unresolved grapheme clusters.
     fn set_missing_glyph_sink(&self, _sink: Option<Arc<dyn MissingGlyphSink>>) {}
     /// Get all available font names.
@@ -1636,8 +1636,8 @@ impl NoopTextSystem {
 }
 
 impl PlatformTextSystem for NoopTextSystem {
-    fn add_fonts(&self, _fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
-        Ok(())
+    fn add_fonts(&self, _fonts: Vec<Cow<'static, [u8]>>) -> Result<AddedFonts> {
+        Ok(AddedFonts::NotReported)
     }
 
     fn all_font_names(&self) -> Vec<String> {

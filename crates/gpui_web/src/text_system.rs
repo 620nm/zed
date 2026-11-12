@@ -4,9 +4,10 @@ use crate::glyph_cache::{CanvasGlyph, GlyphCache};
 use crate::run_replacements::{Replacement, apply_replacements, collect_candidates};
 use anyhow::{Context as _, Result, ensure};
 use gpui::{
-    Bounds, DevicePixels, Font, FontId, FontMetrics, FontRun, FontStyle, GlyphId, Hsla, LineLayout,
-    MissingGlyphSink, Pixels, PlatformTextSystem, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ShapedGlyph, Size, TextRenderingMode, point, px, size,
+    AddedFonts, Bounds, DevicePixels, Font, FontId, FontMetrics, FontRun, FontStyle, GlyphId, Hsla,
+    LineLayout, MissingGlyphSink, Pixels, PlatformTextSystem, RenderGlyphParams,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph, Size, TextRenderingMode, point, px,
+    size,
 };
 use gpui_wgpu::CosmicTextSystem;
 use parking_lot::RwLock;
@@ -252,10 +253,10 @@ impl PlatformTextSystem for WebTextSystem {
         self.state.write().missing_glyph_sink = sink;
     }
 
-    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
-        self.native.add_fonts(fonts)?;
+    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<AddedFonts> {
+        let added = self.native.add_fonts(fonts)?;
         self.state.write().measurements.clear();
-        Ok(())
+        Ok(added)
     }
 
     fn all_font_names(&self) -> Vec<String> {

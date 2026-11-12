@@ -65,7 +65,7 @@ impl DynamicFonts {
                 let result =
                     result.and_then(|bytes| cx.text_system().add_fonts(vec![Cow::Owned(bytes)]));
                 view.status = match result {
-                    Ok(()) => "Font loaded. The same text is now shaped by Cosmic Text.".into(),
+                    Ok(_) => "Font loaded. The same text is now shaped by Cosmic Text.".into(),
                     Err(error) => format!("Font loading failed: {error:#}. Reload to retry."),
                 };
                 cx.refresh_windows();

@@ -122,8 +122,9 @@ impl DirectWriteTextSystem {
 }
 
 impl PlatformTextSystem for DirectWriteTextSystem {
-    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
-        self.state.write().add_fonts(&self.components, fonts)
+    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<AddedFonts> {
+        self.state.write().add_fonts(&self.components, fonts)?;
+        Ok(AddedFonts::NotReported)
     }
 
     fn all_font_names(&self) -> Vec<String> {
