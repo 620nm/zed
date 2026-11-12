@@ -1468,6 +1468,11 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
 struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
+    // 0: Y and CbCr planes; 1: premultiplied RGBA; 2: premultiplied RGBA from an sRGB view.
+    kind: u32,
+    opacity: f32,
+    // WebGL2 requires a uniform buffer's size to be a multiple of 16 bytes.
+    pad: vec2<u32>,
 }
 
 @group(1) @binding(0) var<uniform> surface_locals: SurfaceParams;
@@ -1501,6 +1506,18 @@ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
 
 @fragment
 fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
+    if (surface_locals.kind != 0u) {
+        let texel = textureSampleLevel(t_y, s_surface, input.texture_position, 0.0);
+        var color = texel.rgb;
+        if (surface_locals.kind == 2u && texel.a > 0.0) {
+            // Sampling an sRGB view decodes to linear color. GPUI blends sRGB-encoded
+            // color, so re-encode it, un-premultiplying around the transfer function.
+            color = linear_to_srgb(saturate(texel.rgb / texel.a)) * texel.a;
+        }
+        // The surfaces pipeline blends premultiplied color.
+        return vec4<f32>(color, texel.a) * surface_locals.opacity;
+    }
+
     let y_cb_cr = vec4<f32>(
         textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r,
         textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg,
