@@ -504,6 +504,7 @@ mod tests {
                     PlatformInput::KeyUp(KeyUpEvent {
                         keystroke: Keystroke::parse_with_os(key, cx.platform_info().os)
                             .expect("valid test keystroke"),
+                        physical_key: None,
                     }),
                     cx,
                 );
