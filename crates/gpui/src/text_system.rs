@@ -298,12 +298,13 @@ impl TextSystem {
     ///
     /// Cached font resolution and line layouts are invalidated after installation.
     /// Layouts already in progress may complete against the previous font set.
-    pub fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
-        self.platform_text_system.add_fonts(fonts)?;
+    /// Returns the installed faces when the platform reports them.
+    pub fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<AddedFonts> {
+        let added = self.platform_text_system.add_fonts(fonts)?;
         self.font_ids_by_font.write().clear();
         self.missing_glyph_reporter.reset();
         self.font_generation.fetch_add(1, Ordering::Release);
-        Ok(())
+        Ok(added)
     }
 
     /// Takes the receiver for missing-glyph reports.
@@ -1061,6 +1062,26 @@ pub enum FontStyle {
     Italic,
     /// A typically-sloped version of the regular face.
     Oblique,
+}
+
+/// The faces a platform text system installed from [`TextSystem::add_fonts`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum AddedFonts {
+    /// One entry per installed face; added faces win their family over system faces.
+    Reported(Vec<AddedFace>),
+    /// The platform does not report installed faces.
+    NotReported,
+}
+
+/// One face installed by [`TextSystem::add_fonts`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct AddedFace {
+    /// The face's first family name.
+    pub family: SharedString,
+    /// The face's weight.
+    pub weight: FontWeight,
+    /// The face's style.
+    pub style: FontStyle,
 }
 
 impl Display for FontStyle {

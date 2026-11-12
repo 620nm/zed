@@ -5,10 +5,11 @@ use cosmic_text::{
     FontFeatures as CosmicFontFeatures, FontSystem, ShapeBuffer, ShapeLine, Stretch, Style, Weight,
 };
 use gpui::{
-    Bounds, DevicePixels, FallbackFontClass, Font, FontFallbacks, FontFeatures, FontId,
-    FontMetrics, FontRun, GlyphId, IsZero as _, LineLayout, MissingGlyph, MissingGlyphSink, Pixels,
-    PlatformTextSystem, RenderGlyphParams, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph,
-    ShapedRun, SharedString, Size, TextRenderingMode, point, size,
+    AddedFace, AddedFonts, Bounds, DevicePixels, FallbackFontClass, Font, FontFallbacks,
+    FontFeatures, FontId, FontMetrics, FontRun, GlyphId, IsZero as _, LineLayout, MissingGlyph,
+    MissingGlyphSink, Pixels, PlatformTextSystem, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
+    SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun, SharedString, Size, TextRenderingMode, point,
+    size,
 };
 
 use itertools::Itertools;
@@ -57,6 +58,8 @@ struct CosmicTextSystemState {
     /// Caches the `FontId`s associated with a specific family to avoid iterating the font database
     /// for every font face in a family.
     font_ids_by_family_cache: HashMap<FontKey, SmallVec<[FontId; 4]>>,
+    /// Faces installed through `add_fonts`; they win their family over system faces.
+    added_font_ids: Vec<cosmic_text::fontdb::ID>,
     system_font_fallback: String,
     missing_glyph_sink: Option<Arc<dyn MissingGlyphSink>>,
 }
@@ -107,12 +110,10 @@ impl CosmicTextSystem {
             .db()
             .face(font.font.id())
             .context("font face not found")?;
-        let style = match face.style {
-            cosmic_text::Style::Normal => gpui::FontStyle::Normal,
-            cosmic_text::Style::Italic => gpui::FontStyle::Italic,
-            cosmic_text::Style::Oblique => gpui::FontStyle::Oblique,
-        };
-        Ok((gpui::FontWeight(face.weight.0 as f32), style))
+        Ok((
+            gpui::FontWeight(face.weight.0 as f32),
+            gpui_font_style(face.style),
+        ))
     }
 
     /// Builds reports for unresolved source indices after an outer text system
@@ -139,6 +140,7 @@ impl CosmicTextSystem {
             loaded_fonts: Vec::new(),
             loaded_font_ids_by_key: HashMap::default(),
             font_ids_by_family_cache: HashMap::default(),
+            added_font_ids: Vec::new(),
             system_font_fallback: system_font_fallback.to_string(),
             missing_glyph_sink: None,
         }))
@@ -158,6 +160,7 @@ impl CosmicTextSystem {
             loaded_fonts: Vec::new(),
             loaded_font_ids_by_key: HashMap::default(),
             font_ids_by_family_cache: HashMap::default(),
+            added_font_ids: Vec::new(),
             system_font_fallback: system_font_fallback.to_string(),
             missing_glyph_sink: None,
         }))
@@ -165,7 +168,7 @@ impl CosmicTextSystem {
 }
 
 impl PlatformTextSystem for CosmicTextSystem {
-    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<AddedFonts> {
         self.0.write().add_fonts(fonts)
     }
 
@@ -326,13 +329,64 @@ impl CosmicTextSystemState {
     }
 
     #[profiling::function]
-    fn add_fonts(&mut self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+    fn add_fonts(&mut self, fonts: Vec<Cow<'static, [u8]>>) -> Result<AddedFonts> {
         self.font_ids_by_family_cache.clear();
         let db = self.font_system.db_mut();
+        let mut added = Vec::new();
         for bytes in fonts {
-            db.load_font_source(cosmic_text::fontdb::Source::Binary(Arc::new(bytes)));
+            let ids = db.load_font_source(cosmic_text::fontdb::Source::Binary(Arc::new(bytes)));
+            for id in ids {
+                if let Some(face) = db.face(id)
+                    && let Some(family) = face.families.first()
+                {
+                    added.push(AddedFace {
+                        family: SharedString::from(family.0.clone()),
+                        weight: gpui::FontWeight(face.weight.0 as f32),
+                        style: gpui_font_style(face.style),
+                    });
+                }
+                self.added_font_ids.push(id);
+            }
         }
-        Ok(())
+        // Added faces win their family: set aside every other face that `fontdb::Database::query`
+        // would match for an added family name, so lookup, shaping and fallback all agree.
+        let added_families = self
+            .added_font_ids
+            .iter()
+            .filter_map(|id| db.face(*id))
+            .flat_map(|face| face.families.iter().map(|family| family.0.clone()))
+            .collect::<collections::HashSet<_>>();
+        let shadowed = db
+            .faces()
+            .filter(|face| {
+                !self.added_font_ids.contains(&face.id)
+                    && face
+                        .families
+                        .iter()
+                        .any(|family| added_families.contains(&family.0))
+            })
+            .map(|face| {
+                (
+                    face.id,
+                    face.families.first().map(|family| family.0.clone()),
+                )
+            })
+            .collect::<Vec<_>>();
+        if !shadowed.is_empty() {
+            let families = shadowed
+                .iter()
+                .filter_map(|(_, family)| family.as_deref())
+                .unique()
+                .join(", ");
+            log::info!(
+                "set aside {} system font faces shadowed by added fonts: {families}",
+                shadowed.len()
+            );
+        }
+        for (id, _) in shadowed {
+            db.remove_face(id);
+        }
+        Ok(AddedFonts::Reported(added))
     }
 
     #[profiling::function]
@@ -1164,6 +1218,14 @@ fn cosmic_font_features(features: &FontFeatures) -> Result<CosmicFontFeatures> {
     Ok(result)
 }
 
+fn gpui_font_style(style: cosmic_text::Style) -> gpui::FontStyle {
+    match style {
+        cosmic_text::Style::Normal => gpui::FontStyle::Normal,
+        cosmic_text::Style::Italic => gpui::FontStyle::Italic,
+        cosmic_text::Style::Oblique => gpui::FontStyle::Oblique,
+    }
+}
+
 #[cfg(feature = "font-kit")]
 fn font_into_properties(font: &gpui::Font) -> font_kit::properties::Properties {
     font_kit::properties::Properties {
@@ -1360,6 +1422,53 @@ mod tests {
                 (gpui::FontWeight::NORMAL, gpui::FontStyle::Normal)
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn added_faces_win_their_family_over_system_faces() -> Result<()> {
+        let text_system = CosmicTextSystem::new_without_system_fonts("Lilex");
+        let load_as_system = |bytes: &'static [u8]| {
+            text_system
+                .0
+                .write()
+                .font_system
+                .db_mut()
+                .load_font_source(cosmic_text::fontdb::Source::Binary(Arc::new(bytes)))[0]
+        };
+        let system_lilex = load_as_system(LILEX);
+        let system_plex = load_as_system(IBM_PLEX);
+        let added = text_system.add_fonts(vec![Cow::Borrowed(LILEX)])?;
+        assert_eq!(
+            added,
+            AddedFonts::Reported(vec![AddedFace {
+                family: "Lilex".into(),
+                weight: gpui::FontWeight::NORMAL,
+                style: gpui::FontStyle::Normal,
+            }])
+        );
+        let added_id = text_system.0.read().added_font_ids[0];
+        assert_ne!(added_id, system_lilex);
+
+        let database_id = |font_id: FontId| text_system.0.read().loaded_fonts[font_id.0].font.id();
+        let family = text_system
+            .0
+            .write()
+            .load_family("Lilex", &FontFeatures::default(), None)?;
+        assert_eq!(
+            family.iter().map(|id| database_id(*id)).collect::<Vec<_>>(),
+            [added_id]
+        );
+
+        let font_id = text_system.font_id(&gpui::font("Lilex"))?;
+        assert_eq!(database_id(font_id), added_id);
+        let runs = [FontRun { len: 3, font_id }];
+        let layout = text_system.layout_line("abc", gpui::px(14.0), &runs);
+        assert!(!layout.runs.is_empty());
+        assert!(layout.runs.iter().all(|run| run.font_id == font_id));
+
+        let plex = text_system.font_id(&gpui::font("IBM Plex Sans"))?;
+        assert_eq!(database_id(plex), system_plex);
         Ok(())
     }
 
