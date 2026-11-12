@@ -8,6 +8,10 @@ macro_rules! physical_keys {
         /// `KeyboardEvent.code` values: [`PhysicalKey::KeyW`] is the key that types
         /// "w" on a US QWERTY layout and "z" on a French AZERTY one.
         ///
+        /// Key events carry it on Linux (Wayland and X11) and on the web. macOS and
+        /// Windows do not report it yet, so there the `physical_key` of key events
+        /// is always `None`.
+        ///
         /// Keys that act as modifiers or locks in the active layout (Shift, Control,
         /// Alt, AltGr, Meta, Caps Lock, and Num Lock on Linux) never produce key down
         /// or key up events, so their variants are not reported in key events.
