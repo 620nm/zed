@@ -7,6 +7,7 @@ use objc2_core_foundation::CFRetained;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use objc2_core_video::{CVPixelBuffer, CVPixelBufferGetHeight, CVPixelBufferGetWidth};
 use refineable::Refineable;
+use std::{any::Any, fmt, rc::Rc};
 
 /// A source of a surface's content.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,12 +15,58 @@ pub enum SurfaceSource {
     /// A CoreVideo image buffer
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     Surface(CFRetained<CVPixelBuffer>),
+    /// Content that the window's renderer obtains from a renderer-specific
+    /// producer each time it draws a frame.
+    Custom(CustomSurface),
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 impl From<CFRetained<CVPixelBuffer>> for SurfaceSource {
     fn from(value: CFRetained<CVPixelBuffer>) -> Self {
         SurfaceSource::Surface(value)
+    }
+}
+
+impl From<CustomSurface> for SurfaceSource {
+    fn from(value: CustomSurface) -> Self {
+        SurfaceSource::Custom(value)
+    }
+}
+
+/// A producer of a surface's content, opaque to GPUI's scene.
+///
+/// When it draws a frame, the platform renderer downcasts the producer to the
+/// type it supports, such as `gpui_wgpu::WgpuSurfaceProducer`, and skips the
+/// surface if it is anything else. Only the wgpu renderer draws custom surfaces
+/// today; the Metal and DirectX renderers skip them.
+#[derive(Clone)]
+pub struct CustomSurface(Rc<dyn Any>);
+
+impl CustomSurface {
+    /// Wraps a renderer-specific producer.
+    pub fn new<T: Any>(producer: T) -> Self {
+        Self(Rc::new(producer))
+    }
+
+    /// Returns the producer if it is a `T`.
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+impl PartialEq for CustomSurface {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CustomSurface {}
+
+impl fmt::Debug for CustomSurface {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("CustomSurface")
+            .finish_non_exhaustive()
     }
 }
 
@@ -31,7 +78,6 @@ pub struct Surface {
 }
 
 /// Create a new surface element.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     Surface {
         source: source.into(),
@@ -41,7 +87,9 @@ pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
 }
 
 impl Surface {
-    /// Set the object fit for the image.
+    /// Set the object fit for the image. Only sources with an intrinsic size
+    /// (CoreVideo buffers) are fitted; a [`SurfaceSource::Custom`] source always
+    /// fills the element's bounds, and its producer is told their size.
     pub fn object_fit(mut self, object_fit: ObjectFit) -> Self {
         self.object_fit = object_fit;
         self
@@ -88,17 +136,9 @@ impl Element for Surface {
         &mut self,
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        #[cfg_attr(
-            not(any(target_os = "macos", target_os = "ios")),
-            allow(unused_variables)
-        )]
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
-        #[cfg_attr(
-            not(any(target_os = "macos", target_os = "ios")),
-            allow(unused_variables)
-        )]
         window: &mut Window,
         _: &mut App,
     ) {
@@ -113,8 +153,9 @@ impl Element for Surface {
                 // TODO: Add support for corner_radii
                 window.paint_surface(new_bounds, surface.clone());
             }
-            #[allow(unreachable_patterns)]
-            _ => {}
+            SurfaceSource::Custom(custom) => {
+                window.paint_custom_surface(bounds, custom.clone());
+            }
         }
     }
 }
