@@ -930,8 +930,12 @@ pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    pub image_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
+    /// The element opacity the surface was painted with. The wgpu renderer
+    /// applies it to custom surfaces; the Metal renderer draws CoreVideo
+    /// surfaces opaque and ignores it.
+    pub opacity: f32,
+    /// What to draw. A renderer skips sources it cannot draw.
+    pub source: crate::SurfaceSource,
 }
 
 impl From<PaintSurface> for Primitive {

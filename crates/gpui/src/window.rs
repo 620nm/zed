@@ -5553,7 +5553,26 @@ impl Window {
             order: 0,
             bounds,
             content_mask,
-            image_buffer,
+            opacity: self.element_opacity(),
+            source: crate::SurfaceSource::Surface(image_buffer),
+        });
+    }
+
+    /// Paint a surface whose content the window's renderer obtains from
+    /// `surface` when it draws the frame, filling `bounds`, at the current z-index.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_custom_surface(&mut self, bounds: Bounds<Pixels>, surface: crate::CustomSurface) {
+        self.invalidator.debug_assert_paint();
+
+        let bounds = self.snap_bounds(bounds);
+        let content_mask = self.snapped_content_mask();
+        self.next_frame.scene.insert_primitive(crate::PaintSurface {
+            order: 0,
+            bounds,
+            content_mask,
+            opacity: self.element_opacity(),
+            source: crate::SurfaceSource::Custom(surface),
         });
     }
 

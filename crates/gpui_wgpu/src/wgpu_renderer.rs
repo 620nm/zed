@@ -1,4 +1,7 @@
-use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext};
+use crate::{
+    CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext, WgpuSurfaceProducer,
+    wgpu_surface::surface_target,
+};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
@@ -95,6 +98,10 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 struct SurfaceParams {
     bounds: PodBounds,
     content_mask: PodBounds,
+    /// `fs_surface`'s source kind (see `SurfaceParams` in `shaders.wgsl`).
+    kind: u32,
+    opacity: f32,
+    pad: [u32; 2],
 }
 
 #[repr(C)]
@@ -128,7 +135,6 @@ struct WgpuPipelines {
     mono_sprites: wgpu::RenderPipeline,
     subpixel_sprites: Option<wgpu::RenderPipeline>,
     poly_sprites: wgpu::RenderPipeline,
-    #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
     premultiplied_alpha: bool,
 }
@@ -201,6 +207,8 @@ struct WgpuResources {
     globals_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     instance_data: InstanceData,
+    /// One `SurfaceParams` uniform per custom surface drawn in a frame, reused.
+    surface_params: Vec<wgpu::Buffer>,
 }
 
 struct CachedTextureBindGroup {
@@ -967,6 +975,10 @@ impl WgpuRendererCore {
             &shader_module,
         );
 
+        // Surface textures are premultiplied, so `fs_surface` returns premultiplied
+        // color whatever the target's alpha mode. In straight-alpha mode this lands
+        // the same bytes as un-premultiplying for `ALPHA_BLENDING` would, without
+        // the division.
         let surfaces = create_pipeline(
             "surfaces",
             "vs_surface",
@@ -975,7 +987,10 @@ impl WgpuRendererCore {
             &layouts.surfaces,
             None,
             wgpu::PrimitiveTopology::TriangleStrip,
-            &[Some(color_target)],
+            &[Some(wgpu::ColorTargetState {
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                ..color_target
+            })],
             false,
             &shader_module,
         );
@@ -1279,6 +1294,7 @@ impl WgpuRendererCore {
                 globals_buffer,
                 globals_bind_group,
                 instance_data,
+                surface_params: Vec::new(),
             },
             atlas,
             gamma_offset,
@@ -1402,6 +1418,7 @@ impl WgpuRendererCore {
             bytemuck::bytes_of(&globals),
         );
         self.prepare_texture_bind_groups(scene);
+        let surface_bind_groups = self.produce_surfaces(scene, size);
         self.ensure_depth_texture(size);
         let depth_view = &self
             .depth_texture
@@ -1540,9 +1557,14 @@ impl WgpuRendererCore {
                             &mut pass,
                         )?;
                     }
-                    // Surfaces are macOS-only for video playback and are not
-                    // implemented by the WGPU renderer.
-                    PrimitiveBatch::Surfaces(_surfaces) => {}
+                    PrimitiveBatch::Surfaces(range) => {
+                        let resources = self.resources();
+                        for bind_group in surface_bind_groups[range].iter().flatten() {
+                            pass.set_pipeline(&resources.pipelines.surfaces);
+                            pass.set_bind_group(1, bind_group, &[]);
+                            pass.draw(0..4, 0..1);
+                        }
+                    }
                 }
             }
         }
@@ -1552,6 +1574,93 @@ impl WgpuRendererCore {
             .queue
             .submit(std::iter::once(encoder.finish()));
         Ok(submission)
+    }
+
+    /// Asks each visible custom surface's producer for a texture of its visible
+    /// part, submitting the producer's commands ahead of the frame; one bind
+    /// group per surface that is drawn.
+    fn produce_surfaces(
+        &mut self,
+        scene: &Scene,
+        viewport_size: Size<DevicePixels>,
+    ) -> Vec<Option<wgpu::BindGroup>> {
+        let resources = &mut self.resources;
+        let mut bind_groups = Vec::with_capacity(scene.surfaces.len());
+        for (index, surface) in scene.surfaces.iter().enumerate() {
+            // CoreVideo sources exist only on Apple platforms, where Metal draws them.
+            #[allow(irrefutable_let_patterns)]
+            let gpui::SurfaceSource::Custom(custom) = &surface.source else {
+                bind_groups.push(None);
+                continue;
+            };
+            let Some(producer) = custom.downcast_ref::<WgpuSurfaceProducer>() else {
+                bind_groups.push(None);
+                continue;
+            };
+            let Some(target) =
+                surface_target(surface.bounds, surface.content_mask.bounds, viewport_size)
+            else {
+                bind_groups.push(None);
+                continue;
+            };
+            if resources.surface_params.len() <= index {
+                resources.surface_params.resize_with(index + 1, || {
+                    resources.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("surface_params"),
+                        size: std::mem::size_of::<SurfaceParams>() as u64,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    })
+                });
+            }
+            let params_buffer = &resources.surface_params[index];
+            let bound = producer.produce(&resources.device, &resources.queue, &target, |texture| {
+                let bind_group = resources
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("surface_bind_group"),
+                        layout: &resources.bind_group_layouts.surfaces,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: params_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&texture.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(&texture.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Sampler(&resources.atlas_sampler),
+                            },
+                        ],
+                    });
+                (bind_group, texture.format.has_srgb_suffix())
+            });
+            let Some((bind_group, is_srgb)) = bound else {
+                bind_groups.push(None);
+                continue;
+            };
+            let params = SurfaceParams {
+                bounds: target
+                    .visible
+                    .map(|coordinate| ScaledPixels(coordinate.0 as f32))
+                    .into(),
+                content_mask: surface.content_mask.bounds.into(),
+                kind: if is_srgb { 2 } else { 1 },
+                opacity: surface.opacity,
+                pad: [0; 2],
+            };
+            resources
+                .queue
+                .write_buffer(params_buffer, 0, bytemuck::bytes_of(&params));
+            bind_groups.push(Some(bind_group));
+        }
+        bind_groups
     }
 
     fn ensure_depth_texture(&mut self, size: Size<DevicePixels>) {
@@ -2726,6 +2835,490 @@ mod tests {
         let image = renderer.render_scene_to_image(&Scene::default(), device_size(4, 4))?;
         assert_eq!(image.dimensions(), (4, 4));
         Ok(())
+    }
+
+    /// What a producer was handed for one frame.
+    #[cfg(target_os = "linux")]
+    #[derive(Debug, PartialEq)]
+    struct SurfaceFrameInfo {
+        bounds: Bounds<DevicePixels>,
+        visible: Bounds<DevicePixels>,
+        size: Size<DevicePixels>,
+    }
+
+    #[cfg(target_os = "linux")]
+    type SurfaceFrames = std::rc::Rc<std::cell::RefCell<Vec<SurfaceFrameInfo>>>;
+
+    #[cfg(target_os = "linux")]
+    fn create_surface_texture(
+        device: &wgpu::Device,
+        size: Size<DevicePixels>,
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
+    ) -> wgpu::Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test_surface"),
+            size: wgpu::Extent3d {
+                width: size.width.0 as u32,
+                height: size.height.0 as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn clear_view(
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        color: wgpu::Color,
+    ) {
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("test_surface_clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(color),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+    }
+
+    /// A producer that clears a `size`d texture of `format` to `color`, a
+    /// premultiplied clear value (linear for sRGB formats), recording each frame
+    /// it is handed into `frames`.
+    #[cfg(target_os = "linux")]
+    fn cleared_surface(
+        format: wgpu::TextureFormat,
+        color: wgpu::Color,
+        frames: SurfaceFrames,
+    ) -> gpui::CustomSurface {
+        crate::WgpuSurfaceProducer::new(move |frame| {
+            frames.borrow_mut().push(SurfaceFrameInfo {
+                bounds: frame.bounds,
+                visible: frame.visible,
+                size: frame.size,
+            });
+            let view = create_surface_texture(
+                frame.device,
+                frame.size,
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+            .create_view(&wgpu::TextureViewDescriptor::default());
+            clear_view(frame.encoder, &view, color);
+            Some(crate::WgpuSurfaceTexture { view, format })
+        })
+    }
+
+    /// Opaque green at linear 0.214, which an sRGB texture stores as byte 128.
+    #[cfg(target_os = "linux")]
+    const SURFACE_GREEN: wgpu::Color = wgpu::Color {
+        r: 0.0,
+        g: 0.214_041_14,
+        b: 0.0,
+        a: 1.0,
+    };
+
+    #[cfg(target_os = "linux")]
+    fn scaled_bounds(x: f32, width: f32) -> Bounds<ScaledPixels> {
+        Bounds {
+            origin: Point {
+                x: x.into(),
+                y: 0.0.into(),
+            },
+            size: Size {
+                width: width.into(),
+                height: 32.0.into(),
+            },
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn device_bounds(x: i32, y: i32, width: i32, height: i32) -> Bounds<DevicePixels> {
+        Bounds {
+            origin: Point {
+                x: DevicePixels(x),
+                y: DevicePixels(y),
+            },
+            size: device_size(width, height),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn custom_surface(
+        x: f32,
+        width: f32,
+        mask_width: f32,
+        opacity: f32,
+        surface: gpui::CustomSurface,
+    ) -> gpui::PaintSurface {
+        gpui::PaintSurface {
+            order: 0,
+            bounds: scaled_bounds(x, width),
+            content_mask: ContentMask {
+                bounds: scaled_bounds(x, mask_width),
+            },
+            opacity,
+            source: gpui::SurfaceSource::Custom(surface),
+        }
+    }
+
+    /// A custom surface draws in paint order between two quads, clipped to its
+    /// content mask, with an sRGB source re-encoded to its stored bytes, and its
+    /// producer renders only the visible part.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_renderer_draws_custom_surface_in_order() -> anyhow::Result<()> {
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        let frames = SurfaceFrames::default();
+        let mut scene = Scene::default();
+        scene.insert_primitive(solid_quad(0.0, 0.0, 32.0, 32.0, gpui::red()));
+        scene.insert_primitive(custom_surface(
+            16.0,
+            32.0,
+            24.0,
+            1.0,
+            cleared_surface(
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                SURFACE_GREEN,
+                frames.clone(),
+            ),
+        ));
+        scene.insert_primitive(solid_quad(28.0, 0.0, 8.0, 32.0, gpui::blue()));
+        scene.finish();
+
+        let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+        assert_eq!(
+            *frames.borrow(),
+            [SurfaceFrameInfo {
+                bounds: device_bounds(16, 0, 32, 32),
+                visible: device_bounds(16, 0, 24, 32),
+                size: device_size(24, 32),
+            }]
+        );
+        assert_pixel(&image, 8, 16, RED);
+        assert_pixel(&image, 20, 16, [0, 128, 0, 255]);
+        assert_pixel(&image, 32, 16, BLUE);
+        assert_pixel(&image, 38, 16, [0, 128, 0, 255]);
+        assert_pixel(&image, 44, 16, BLACK);
+        renderer.check_gpu_errors()
+    }
+
+    /// A surface's texels are premultiplied: a half-transparent green texel at
+    /// half opacity covers a quarter of what is under it, for sRGB and non-sRGB
+    /// views and for both of the target's alpha modes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_renderer_blends_translucent_custom_surfaces() -> anyhow::Result<()> {
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        // Straight full green at alpha 128/255, premultiplied: in sRGB-encoded
+        // space for the non-sRGB view, in linear space for the sRGB one (where full
+        // green is the same in both).
+        let alpha = 128.0 / 255.0;
+        let premultiplied_green = wgpu::Color {
+            r: 0.0,
+            g: alpha,
+            b: 0.0,
+            a: alpha,
+        };
+        for alpha_mode in [
+            wgpu::CompositeAlphaMode::Opaque,
+            wgpu::CompositeAlphaMode::PreMultiplied,
+        ] {
+            renderer
+                .core
+                .rebuild_pipelines(renderer.core.target_format, alpha_mode);
+            for format in [
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+            ] {
+                let mut scene = Scene::default();
+                scene.insert_primitive(solid_quad(0.0, 0.0, 64.0, 32.0, gpui::red()));
+                scene.insert_primitive(custom_surface(
+                    16.0,
+                    32.0,
+                    32.0,
+                    0.5,
+                    cleared_surface(format, premultiplied_green, SurfaceFrames::default()),
+                ));
+                scene.finish();
+
+                let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+                assert_pixel(&image, 8, 16, RED);
+                let actual = image.get_pixel(32, 16).0;
+                assert!(
+                    actual
+                        .iter()
+                        .zip([191, 64, 0, 255])
+                        .all(|(actual, expected)| actual.abs_diff(expected) <= 3),
+                    "{format:?} surface in {alpha_mode:?} mode drew {actual:?}"
+                );
+            }
+        }
+        renderer.check_gpu_errors()
+    }
+
+    /// A producer whose commands fail validation loses only its surface: GPUI's
+    /// frames keep drawing without errors, and the producer stops being called.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_renderer_isolates_failing_custom_surface() -> anyhow::Result<()> {
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let producer = {
+            let calls = calls.clone();
+            crate::WgpuSurfaceProducer::new(move |frame| {
+                calls.set(calls.get() + 1);
+                // Rendering to a texture without RENDER_ATTACHMENT usage is invalid.
+                let view = create_surface_texture(
+                    frame.device,
+                    frame.size,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    wgpu::TextureUsages::TEXTURE_BINDING,
+                )
+                .create_view(&wgpu::TextureViewDescriptor::default());
+                clear_view(frame.encoder, &view, SURFACE_GREEN);
+                Some(crate::WgpuSurfaceTexture {
+                    view,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                })
+            })
+        };
+        let mut scene = Scene::default();
+        scene.insert_primitive(solid_quad(0.0, 0.0, 64.0, 32.0, gpui::red()));
+        scene.insert_primitive(custom_surface(16.0, 32.0, 32.0, 1.0, producer));
+        scene.insert_primitive(solid_quad(56.0, 0.0, 8.0, 32.0, gpui::blue()));
+        scene.finish();
+
+        for _ in 0..12 {
+            let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+            assert_pixel(&image, 8, 16, RED);
+            assert_pixel(&image, 32, 16, RED);
+            assert_pixel(&image, 60, 16, BLUE);
+        }
+        renderer.check_gpu_errors()?;
+        assert_eq!(calls.get(), 3);
+        Ok(())
+    }
+
+    /// Views GPUI cannot bind, whether it rejects them up front or only bind
+    /// group creation does, disable only their own surfaces.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn headless_renderer_isolates_unbindable_custom_surface_views() -> anyhow::Result<()> {
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        let unbindable_producer =
+            |calls: std::rc::Rc<std::cell::Cell<u32>>,
+             usage: wgpu::TextureUsages,
+             dimension: wgpu::TextureViewDimension| {
+                crate::WgpuSurfaceProducer::new(move |frame| {
+                    calls.set(calls.get() + 1);
+                    let view = create_surface_texture(
+                        frame.device,
+                        frame.size,
+                        wgpu::TextureFormat::Rgba8Unorm,
+                        usage,
+                    )
+                    .create_view(&wgpu::TextureViewDescriptor {
+                        dimension: Some(dimension),
+                        ..Default::default()
+                    });
+                    Some(crate::WgpuSurfaceTexture {
+                        view,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                    })
+                })
+            };
+        let unsampleable_calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let array_view_calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let working_frames = SurfaceFrames::default();
+        let mut scene = Scene::default();
+        scene.insert_primitive(solid_quad(0.0, 0.0, 64.0, 32.0, gpui::red()));
+        scene.insert_primitive(custom_surface(
+            0.0,
+            16.0,
+            16.0,
+            1.0,
+            unbindable_producer(
+                unsampleable_calls.clone(),
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+                wgpu::TextureViewDimension::D2,
+            ),
+        ));
+        scene.insert_primitive(custom_surface(
+            16.0,
+            16.0,
+            16.0,
+            1.0,
+            unbindable_producer(
+                array_view_calls.clone(),
+                wgpu::TextureUsages::TEXTURE_BINDING,
+                wgpu::TextureViewDimension::D2Array,
+            ),
+        ));
+        scene.insert_primitive(custom_surface(
+            32.0,
+            16.0,
+            16.0,
+            1.0,
+            cleared_surface(
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                SURFACE_GREEN,
+                working_frames.clone(),
+            ),
+        ));
+        scene.finish();
+
+        for _ in 0..6 {
+            let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+            assert_pixel(&image, 8, 16, RED);
+            assert_pixel(&image, 24, 16, RED);
+            assert_pixel(&image, 40, 16, [0, 128, 0, 255]);
+            assert_pixel(&image, 56, 16, RED);
+        }
+        renderer.check_gpu_errors()?;
+        assert_eq!(unsampleable_calls.get(), 3);
+        assert_eq!(array_view_calls.get(), 3);
+        assert_eq!(working_frames.borrow().len(), 6);
+        Ok(())
+    }
+
+    /// A producer disabled on one device is called again once the renderer's
+    /// device is replaced.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn custom_surface_producer_retries_on_a_new_device() -> anyhow::Result<()> {
+        let renderer = WgpuHeadlessRenderer::new()?;
+        let (other_device, other_queue) = gpui::block_on(
+            renderer
+                .context
+                .adapter
+                .request_device(&wgpu::DeviceDescriptor::default()),
+        )?;
+        let other_device = Arc::new(other_device);
+        let other_queue = Arc::new(other_queue);
+        let devices = [
+            (
+                &renderer.core.resources.device,
+                &renderer.core.resources.queue,
+            ),
+            (&other_device, &other_queue),
+        ];
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let surface = {
+            let calls = calls.clone();
+            // A texture without TEXTURE_BINDING usage cannot be sampled.
+            crate::WgpuSurfaceProducer::new(move |frame| {
+                calls.set(calls.get() + 1);
+                let view = create_surface_texture(
+                    frame.device,
+                    frame.size,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT,
+                )
+                .create_view(&wgpu::TextureViewDescriptor::default());
+                Some(crate::WgpuSurfaceTexture {
+                    view,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                })
+            })
+        };
+        let producer = surface
+            .downcast_ref::<crate::WgpuSurfaceProducer>()
+            .context("custom surface is not a wgpu producer")?;
+        let target = crate::wgpu_surface::surface_target(
+            scaled_bounds(0.0, 8.0),
+            scaled_bounds(0.0, 8.0),
+            device_size(8, 32),
+        )
+        .context("surface should be visible")?;
+
+        for (device, queue) in devices {
+            for _ in 0..5 {
+                assert!(producer.produce(device, queue, &target, |_| ()).is_none());
+            }
+        }
+        assert_eq!(calls.get(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn surface_target_clips_to_the_mask_and_viewport() {
+        let scaled = |x: f32, y: f32, width: f32, height: f32| Bounds {
+            origin: Point {
+                x: ScaledPixels(x),
+                y: ScaledPixels(y),
+            },
+            size: Size {
+                width: ScaledPixels(width),
+                height: ScaledPixels(height),
+            },
+        };
+        let device = |x: i32, y: i32, width: i32, height: i32| Bounds {
+            origin: Point {
+                x: DevicePixels(x),
+                y: DevicePixels(y),
+            },
+            size: Size {
+                width: DevicePixels(width),
+                height: DevicePixels(height),
+            },
+        };
+        let size = |width: i32, height: i32| Size {
+            width: DevicePixels(width),
+            height: DevicePixels(height),
+        };
+
+        assert_eq!(
+            crate::wgpu_surface::surface_target(
+                scaled(0.5, 0.25, 10.0, 10.0),
+                scaled(0.0, 0.0, 100.0, 100.0),
+                size(64, 64),
+            ),
+            Some(crate::wgpu_surface::SurfaceTarget {
+                bounds: device(0, 0, 11, 11),
+                visible: device(0, 0, 11, 11),
+                size: size(11, 11)
+            })
+        );
+        assert_eq!(
+            crate::wgpu_surface::surface_target(
+                scaled(-10.0, 0.0, 300.0, 50.0),
+                scaled(0.0, 0.0, 200.0, 100.0),
+                size(150, 40),
+            ),
+            Some(crate::wgpu_surface::SurfaceTarget {
+                bounds: device(-10, 0, 300, 50),
+                visible: device(0, 0, 150, 40),
+                size: size(150, 40)
+            })
+        );
+        assert_eq!(
+            crate::wgpu_surface::surface_target(
+                scaled(0.0, 0.0, 10.0, 10.0),
+                scaled(20.0, 0.0, 10.0, 10.0),
+                size(64, 64),
+            ),
+            None
+        );
+        assert_eq!(
+            crate::wgpu_surface::surface_target(
+                scaled(70.0, 0.0, 10.0, 10.0),
+                scaled(0.0, 0.0, 100.0, 100.0),
+                size(64, 64),
+            ),
+            None
+        );
     }
 
     #[test]
