@@ -225,6 +225,8 @@ pub struct X11ClientState {
     pub(crate) pre_edit_text: Option<String>,
     pub(crate) composing: bool,
     pub(crate) pre_key_char_down: Option<Keystroke>,
+    /// Keycodes pressed and not yet released, to tell auto-repeat from a first press.
+    pressed_keys: HashSet<xproto::Keycode>,
     pub(crate) cursor_handle: cursor::Handle,
     pub(crate) cursor_styles: HashMap<xproto::Window, CursorStyle>,
     pub(crate) cursor_cache: HashMap<CursorStyle, Option<xproto::Cursor>>,
@@ -433,6 +435,25 @@ impl X11Connection {
         )?;
         anyhow::ensure!(xkb.supported, "X server does not support XKB");
 
+        // Have a held key repeat as presses alone, as on other platforms, rather
+        // than as release/press pairs.
+        let detectable_auto_repeat = xkb::PerClientFlag::DETECTABLE_AUTO_REPEAT;
+        match get_reply(
+            || "Failed to enable XKB detectable auto-repeat",
+            xcb_connection.xkb_per_client_flags(
+                xkb::ID::USE_CORE_KBD.into(),
+                detectable_auto_repeat,
+                detectable_auto_repeat,
+                0u32.into(),
+                0u32.into(),
+                0u32.into(),
+            ),
+        ) {
+            Ok(reply) if reply.value.contains(detectable_auto_repeat) => {}
+            Ok(_) => log::warn!("x11: XKB detectable auto-repeat is not supported"),
+            Err(error) => log::warn!("x11: {error:#}"),
+        }
+
         let events = xkb::EventType::STATE_NOTIFY
             | xkb::EventType::MAP_NOTIFY
             | xkb::EventType::NEW_KEYBOARD_NOTIFY;
@@ -539,6 +560,7 @@ impl X11Connection {
                 compose_state,
                 pre_edit_text: None,
                 pre_key_char_down: None,
+                pressed_keys: HashSet::default(),
                 composing: false,
 
                 cursor_handle,
@@ -750,6 +772,12 @@ impl X11Client {
                     drop(state);
                     self.handle_event(event);
                     continue;
+                }
+
+                // The input method may consume a release without passing it back,
+                // which would leave the key looking held on its next press.
+                if let Event::KeyRelease(key_release) = &event {
+                    state.pressed_keys.remove(&key_release.detail);
                 }
 
                 let Some((mut ximc, mut xim_handler)) = state.take_xim() else {
@@ -1069,6 +1097,8 @@ impl X11Client {
                 self.enable_ime();
             }
             Event::FocusOut(event) => {
+                // Keys released while focus is elsewhere are never reported to us.
+                self.0.borrow_mut().pressed_keys.clear();
                 let window = self.get_window(event.event)?;
                 window.set_active(false);
                 let mut state = self.0.borrow_mut();
@@ -1143,6 +1173,8 @@ impl X11Client {
                 }
             }
             Event::KeyPress(event) => {
+                // With detectable auto-repeat, a repeat is a second press with no release.
+                let is_held = !self.0.borrow_mut().pressed_keys.insert(event.detail);
                 let window = self.get_window(event.event)?;
                 let mut state = self.0.borrow_mut();
 
@@ -1202,11 +1234,12 @@ impl X11Client {
                 drop(state);
                 window.handle_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
                     keystroke,
-                    is_held: false,
+                    is_held,
                     prefer_character_input: false,
                 }));
             }
             Event::KeyRelease(event) => {
+                self.0.borrow_mut().pressed_keys.remove(&event.detail);
                 let window = self.get_window(event.event)?;
                 let mut state = self.0.borrow_mut();
 
