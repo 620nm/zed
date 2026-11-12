@@ -5541,6 +5541,7 @@ mod tests {
                     keystroke,
                     is_held: false,
                     prefer_character_input: false,
+                    physical_key: None,
                 }
                 .to_platform_input(),
                 cx,
@@ -5553,7 +5554,14 @@ mod tests {
         let os = cx.read(|cx| cx.platform_info().os);
         let keystroke = Keystroke::parse_with_os(key, os).unwrap();
         cx.update_window(window, |_, window, cx| {
-            window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+            window.dispatch_event(
+                KeyUpEvent {
+                    keystroke,
+                    physical_key: None,
+                }
+                .to_platform_input(),
+                cx,
+            );
         })
         .unwrap();
     }

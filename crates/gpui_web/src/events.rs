@@ -4,8 +4,8 @@ use gpui::{
     Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, GestureTuning,
     Image, ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
-    Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent, TouchId,
-    TouchPhase, point, px,
+    PhysicalKey, Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent,
+    TouchId, TouchPhase, point, px,
 };
 use wasm_bindgen::prelude::*;
 
@@ -580,8 +580,12 @@ impl WebWindowInner {
             keystroke: keystroke.clone(),
             is_held: false,
             prefer_character_input: false,
+            physical_key: None,
         }));
-        self.dispatch_input(PlatformInput::KeyUp(KeyUpEvent { keystroke }));
+        self.dispatch_input(PlatformInput::KeyUp(KeyUpEvent {
+            keystroke,
+            physical_key: None,
+        }));
     }
 
     fn register_pointer_move(self: &Rc<Self>) -> EventListenerHandle {
@@ -784,6 +788,7 @@ impl WebWindowInner {
                 keystroke,
                 is_held,
                 prefer_character_input: false,
+                physical_key: PhysicalKey::from_code(&event.code()),
             }));
 
             if let Some(result) = result {
@@ -877,7 +882,10 @@ impl WebWindowInner {
             key_char,
         };
 
-        self.dispatch_input(PlatformInput::KeyUp(KeyUpEvent { keystroke }))
+        self.dispatch_input(PlatformInput::KeyUp(KeyUpEvent {
+            keystroke,
+            physical_key: PhysicalKey::from_code(&event.code()),
+        }))
     }
 
     /// Imports IME edits from the hidden input into the app.

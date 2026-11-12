@@ -52,6 +52,7 @@ use crate::linux::{
     DEFAULT_CURSOR_ICON_NAME, capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state,
     is_within_click_distance, keystroke_from_xkb, keystroke_underlying_dead_key,
     log_cursor_icon_warning, modifiers_from_xkb, new_xkb_context, open_uri_internal,
+    physical_key_from_xkb,
     platform::{DOUBLE_CLICK_INTERVAL, SCROLL_LINES},
     reveal_path_internal,
     xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
@@ -1236,6 +1237,7 @@ impl X11Client {
                     keystroke,
                     is_held,
                     prefer_character_input: false,
+                    physical_key: physical_key_from_xkb(event.detail.into()),
                 }));
             }
             Event::KeyRelease(event) => {
@@ -1259,7 +1261,10 @@ impl X11Client {
                     keystroke
                 };
                 drop(state);
-                window.handle_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }));
+                window.handle_input(PlatformInput::KeyUp(gpui::KeyUpEvent {
+                    keystroke,
+                    physical_key: physical_key_from_xkb(event.detail.into()),
+                }));
             }
             Event::XinputButtonPress(event) => {
                 let window = self.get_window(event.event)?;

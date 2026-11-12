@@ -1457,6 +1457,174 @@ fn guess_ascii(keycode: Keycode, shift: bool) -> Option<char> {
     Some(c)
 }
 
+/// The layout-independent position of the key with this XKB keycode.
+///
+/// Both backends receive XKB keycodes that are evdev codes plus 8, as
+/// `guess_ascii` also assumes. Evdev codes map to `KeyboardEvent.code` values
+/// the way browsers map them on Linux.
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) fn physical_key_from_xkb(keycode: Keycode) -> Option<gpui::PhysicalKey> {
+    use gpui::PhysicalKey;
+    let evdev_code = keycode.raw().checked_sub(8)?;
+    Some(match evdev_code {
+        1 => PhysicalKey::Escape,
+        2 => PhysicalKey::Digit1,
+        3 => PhysicalKey::Digit2,
+        4 => PhysicalKey::Digit3,
+        5 => PhysicalKey::Digit4,
+        6 => PhysicalKey::Digit5,
+        7 => PhysicalKey::Digit6,
+        8 => PhysicalKey::Digit7,
+        9 => PhysicalKey::Digit8,
+        10 => PhysicalKey::Digit9,
+        11 => PhysicalKey::Digit0,
+        12 => PhysicalKey::Minus,
+        13 => PhysicalKey::Equal,
+        14 => PhysicalKey::Backspace,
+        15 => PhysicalKey::Tab,
+        16 => PhysicalKey::KeyQ,
+        17 => PhysicalKey::KeyW,
+        18 => PhysicalKey::KeyE,
+        19 => PhysicalKey::KeyR,
+        20 => PhysicalKey::KeyT,
+        21 => PhysicalKey::KeyY,
+        22 => PhysicalKey::KeyU,
+        23 => PhysicalKey::KeyI,
+        24 => PhysicalKey::KeyO,
+        25 => PhysicalKey::KeyP,
+        26 => PhysicalKey::BracketLeft,
+        27 => PhysicalKey::BracketRight,
+        28 => PhysicalKey::Enter,
+        29 => PhysicalKey::ControlLeft,
+        30 => PhysicalKey::KeyA,
+        31 => PhysicalKey::KeyS,
+        32 => PhysicalKey::KeyD,
+        33 => PhysicalKey::KeyF,
+        34 => PhysicalKey::KeyG,
+        35 => PhysicalKey::KeyH,
+        36 => PhysicalKey::KeyJ,
+        37 => PhysicalKey::KeyK,
+        38 => PhysicalKey::KeyL,
+        39 => PhysicalKey::Semicolon,
+        40 => PhysicalKey::Quote,
+        41 => PhysicalKey::Backquote,
+        42 => PhysicalKey::ShiftLeft,
+        43 => PhysicalKey::Backslash,
+        44 => PhysicalKey::KeyZ,
+        45 => PhysicalKey::KeyX,
+        46 => PhysicalKey::KeyC,
+        47 => PhysicalKey::KeyV,
+        48 => PhysicalKey::KeyB,
+        49 => PhysicalKey::KeyN,
+        50 => PhysicalKey::KeyM,
+        51 => PhysicalKey::Comma,
+        52 => PhysicalKey::Period,
+        53 => PhysicalKey::Slash,
+        54 => PhysicalKey::ShiftRight,
+        55 => PhysicalKey::NumpadMultiply,
+        56 => PhysicalKey::AltLeft,
+        57 => PhysicalKey::Space,
+        58 => PhysicalKey::CapsLock,
+        59 => PhysicalKey::F1,
+        60 => PhysicalKey::F2,
+        61 => PhysicalKey::F3,
+        62 => PhysicalKey::F4,
+        63 => PhysicalKey::F5,
+        64 => PhysicalKey::F6,
+        65 => PhysicalKey::F7,
+        66 => PhysicalKey::F8,
+        67 => PhysicalKey::F9,
+        68 => PhysicalKey::F10,
+        69 => PhysicalKey::NumLock,
+        70 => PhysicalKey::ScrollLock,
+        71 => PhysicalKey::Numpad7,
+        72 => PhysicalKey::Numpad8,
+        73 => PhysicalKey::Numpad9,
+        74 => PhysicalKey::NumpadSubtract,
+        75 => PhysicalKey::Numpad4,
+        76 => PhysicalKey::Numpad5,
+        77 => PhysicalKey::Numpad6,
+        78 => PhysicalKey::NumpadAdd,
+        79 => PhysicalKey::Numpad1,
+        80 => PhysicalKey::Numpad2,
+        81 => PhysicalKey::Numpad3,
+        82 => PhysicalKey::Numpad0,
+        83 => PhysicalKey::NumpadDecimal,
+        85 => PhysicalKey::Lang5,
+        86 => PhysicalKey::IntlBackslash,
+        87 => PhysicalKey::F11,
+        88 => PhysicalKey::F12,
+        89 => PhysicalKey::IntlRo,
+        90 => PhysicalKey::Lang3,
+        91 => PhysicalKey::Lang4,
+        92 => PhysicalKey::Convert,
+        93 => PhysicalKey::KanaMode,
+        94 => PhysicalKey::NonConvert,
+        96 => PhysicalKey::NumpadEnter,
+        97 => PhysicalKey::ControlRight,
+        98 => PhysicalKey::NumpadDivide,
+        99 => PhysicalKey::PrintScreen,
+        100 => PhysicalKey::AltRight,
+        102 => PhysicalKey::Home,
+        103 => PhysicalKey::ArrowUp,
+        104 => PhysicalKey::PageUp,
+        105 => PhysicalKey::ArrowLeft,
+        106 => PhysicalKey::ArrowRight,
+        107 => PhysicalKey::End,
+        108 => PhysicalKey::ArrowDown,
+        109 => PhysicalKey::PageDown,
+        110 => PhysicalKey::Insert,
+        111 => PhysicalKey::Delete,
+        113 => PhysicalKey::AudioVolumeMute,
+        114 => PhysicalKey::AudioVolumeDown,
+        115 => PhysicalKey::AudioVolumeUp,
+        116 => PhysicalKey::Power,
+        117 => PhysicalKey::NumpadEqual,
+        119 => PhysicalKey::Pause,
+        121 => PhysicalKey::NumpadComma,
+        122 => PhysicalKey::Lang1,
+        123 => PhysicalKey::Lang2,
+        124 => PhysicalKey::IntlYen,
+        125 => PhysicalKey::MetaLeft,
+        126 => PhysicalKey::MetaRight,
+        127 => PhysicalKey::ContextMenu,
+        128 => PhysicalKey::BrowserStop,
+        138 => PhysicalKey::Help,
+        140 => PhysicalKey::LaunchApp2,
+        142 => PhysicalKey::Sleep,
+        143 => PhysicalKey::WakeUp,
+        144 => PhysicalKey::LaunchApp1,
+        155 => PhysicalKey::LaunchMail,
+        156 => PhysicalKey::BrowserFavorites,
+        158 => PhysicalKey::BrowserBack,
+        159 => PhysicalKey::BrowserForward,
+        161 => PhysicalKey::Eject,
+        163 => PhysicalKey::MediaTrackNext,
+        164 => PhysicalKey::MediaPlayPause,
+        165 => PhysicalKey::MediaTrackPrevious,
+        166 => PhysicalKey::MediaStop,
+        172 => PhysicalKey::BrowserHome,
+        173 => PhysicalKey::BrowserRefresh,
+        179 => PhysicalKey::NumpadParenLeft,
+        180 => PhysicalKey::NumpadParenRight,
+        183 => PhysicalKey::F13,
+        184 => PhysicalKey::F14,
+        185 => PhysicalKey::F15,
+        186 => PhysicalKey::F16,
+        187 => PhysicalKey::F17,
+        188 => PhysicalKey::F18,
+        189 => PhysicalKey::F19,
+        190 => PhysicalKey::F20,
+        191 => PhysicalKey::F21,
+        192 => PhysicalKey::F22,
+        193 => PhysicalKey::F23,
+        194 => PhysicalKey::F24,
+        217 => PhysicalKey::BrowserSearch,
+        464 => PhysicalKey::Fn,
+        _ => return None,
+    })
+}
+
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(super) fn keystroke_from_xkb(
     state: &State,
@@ -1756,6 +1924,36 @@ async fn await_idle_sleep_prevention(
 mod tests {
     use super::*;
     use gpui::{Point, px};
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn physical_keys_follow_evdev_codes() {
+        use gpui::PhysicalKey;
+
+        let physical_key = |evdev_code: u32| physical_key_from_xkb(Keycode::new(evdev_code + 8));
+        assert_eq!(physical_key(1), Some(PhysicalKey::Escape));
+        assert_eq!(physical_key(17), Some(PhysicalKey::KeyW));
+        assert_eq!(physical_key(43), Some(PhysicalKey::Backslash));
+        assert_eq!(physical_key(86), Some(PhysicalKey::IntlBackslash));
+        assert_eq!(physical_key(96), Some(PhysicalKey::NumpadEnter));
+        assert_eq!(physical_key(125), Some(PhysicalKey::MetaLeft));
+        assert_eq!(physical_key(194), Some(PhysicalKey::F24));
+        assert_eq!(physical_key(84), None);
+        assert_eq!(physical_key_from_xkb(Keycode::new(0)), None);
+        assert_eq!(
+            guess_ascii(Keycode::new(17 + 8), false),
+            Some('w'),
+            "both functions must agree on the keycode offset"
+        );
+
+        let mut seen = collections::HashSet::default();
+        for keycode in 0..1024 {
+            if let Some(key) = physical_key_from_xkb(Keycode::new(keycode)) {
+                assert!(seen.insert(key), "{key} is mapped from two keycodes");
+                assert_eq!(PhysicalKey::from_code(key.code()), Some(key));
+            }
+        }
+    }
 
     #[test]
     fn power_mode_callbacks_can_reenter_and_replace_themselves() -> anyhow::Result<()> {

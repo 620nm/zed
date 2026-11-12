@@ -6758,6 +6758,7 @@ pub(crate) mod tests {
         cx.simulate_keystrokes("enter");
         cx.simulate_event(gpui::KeyUpEvent {
             keystroke: gpui::Keystroke::parse("enter").expect("valid keystroke"),
+            physical_key: None,
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("session-notices").is_none());

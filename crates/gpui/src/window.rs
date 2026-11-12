@@ -15,11 +15,11 @@ use crate::{
     Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
     Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
     MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, PaintedPath, Path,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
-    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
-    StrikethroughStyle, Style, SubpixelSprite, Subscription, SystemWindowTab,
+    PhysicalKey, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
+    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
+    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
+    SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, Task, TextInputConfiguration, TextInputStateChange,
     TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState, TransformationMatrix,
     Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
@@ -1276,6 +1276,7 @@ pub struct Window {
     mouse_hit_test: HitTest,
     modifiers: Modifiers,
     capslock: Capslock,
+    pressed_keys: FxHashSet<PhysicalKey>,
     scale_factor: f32,
     pub(crate) bounds_observers: SingleSubscriberSet<AnyObserver>,
     appearance: WindowAppearance,
@@ -2201,6 +2202,10 @@ impl Window {
                 handle
                     .update(&mut cx, |_, window, cx| {
                         window.active.set(active);
+                        if !active {
+                            // An inactive window is not told when keys are released.
+                            window.pressed_keys.clear();
+                        }
                         window.modifiers = window.platform_window.modifiers();
                         window.capslock = window.platform_window.capslock();
                         window
@@ -2407,6 +2412,7 @@ impl Window {
             mouse_hit_test: HitTest::default(),
             modifiers,
             capslock,
+            pressed_keys: FxHashSet::default(),
             scale_factor,
             bounds_observers: SingleSubscriberSet::new(),
             appearance,
@@ -3729,6 +3735,26 @@ impl Window {
     /// The current state of the keyboard's modifiers
     pub fn modifiers(&self) -> Modifiers {
         self.modifiers
+    }
+
+    /// Whether the key at this position is held down, according to the
+    /// [`KeyDownEvent::physical_key`] and [`KeyUpEvent::physical_key`] of the key
+    /// events this window received. The state is updated before the event is
+    /// dispatched, and forgotten when the window stops being active.
+    ///
+    /// Only keys whose events carry a physical key are tracked, so this is always
+    /// false on platforms that do not report one (see [`PhysicalKey`]) and for
+    /// keys that act as modifiers or locks: use [`Self::modifiers`] for those.
+    /// A key that was already held when the window became active is reported
+    /// once the platform sends an event for it.
+    pub fn is_key_pressed(&self, key: PhysicalKey) -> bool {
+        self.pressed_keys.contains(&key)
+    }
+
+    /// Every key position held down, in no particular order, as
+    /// [`Self::is_key_pressed`] reports them.
+    pub fn pressed_keys(&self) -> impl Iterator<Item = PhysicalKey> + '_ {
+        self.pressed_keys.iter().copied()
     }
 
     /// Returns true if the last input event was keyboard-based (key press, tab navigation, etc.)
@@ -5983,6 +6009,7 @@ impl Window {
                 keystroke: keystroke.clone(),
                 is_held: false,
                 prefer_character_input: false,
+                physical_key: None,
             }),
             cx,
         );
@@ -6153,7 +6180,18 @@ impl Window {
                 self.mouse_position = back.start_position;
                 PlatformInput::BackGesture(back)
             }
-            PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
+            PlatformInput::KeyDown(key_down) => {
+                if let Some(key) = key_down.physical_key {
+                    self.pressed_keys.insert(key);
+                }
+                PlatformInput::KeyDown(key_down)
+            }
+            PlatformInput::KeyUp(key_up) => {
+                if let Some(key) = key_up.physical_key {
+                    self.pressed_keys.remove(&key);
+                }
+                PlatformInput::KeyUp(key_up)
+            }
         };
 
         if let Some(any_mouse_event) = event.mouse_event() {
@@ -6877,6 +6915,7 @@ impl Window {
                 keystroke: replay.keystroke.clone(),
                 is_held: false,
                 prefer_character_input: true,
+                physical_key: None,
             };
 
             cx.propagate_event = true;
@@ -8331,12 +8370,12 @@ mod tests {
         AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, Bounds, ContentMask,
         Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
         ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, InputEvent as _,
-        InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton,
-        MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, PlatformInput, Point,
-        Render, RequestFrameOptions, ScaledPixels, StatefulInteractiveElement as _, Styled,
-        TestAppContext, ThermalState, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline,
-        UnderlineStyle, Window, WindowAppearance, WindowOptions, canvas, div, hsla, point, px,
-        size,
+        InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke, LongPressEvent,
+        MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PhysicalKey,
+        Pixels, PlatformInput, Point, Render, RequestFrameOptions, ScaledPixels,
+        StatefulInteractiveElement as _, Styled, TestAppContext, ThermalState, TouchDragEvent,
+        TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance,
+        WindowOptions, canvas, div, hsla, point, px, size,
     };
 
     #[gpui::test]
@@ -8378,6 +8417,62 @@ mod tests {
             assert_eq!(handles.handles.len(), 0);
             assert!(handles.dropped_handles.is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn test_pressed_keys_follow_key_events(cx: &mut TestAppContext) {
+        let (_view, cx) = cx.add_window_view(|_, _| EmptyView);
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+
+        let key_down = |key: &'static str, physical_key, is_held| KeyDownEvent {
+            keystroke: Keystroke::parse(key).expect("valid keystroke"),
+            physical_key,
+            is_held,
+            prefer_character_input: false,
+        };
+        let key_up = |key: &'static str, physical_key| KeyUpEvent {
+            keystroke: Keystroke::parse(key).expect("valid keystroke"),
+            physical_key,
+        };
+        let pressed_keys = |cx: &mut crate::VisualTestContext| {
+            cx.update(|window, _| {
+                let mut keys = window.pressed_keys().collect::<Vec<_>>();
+                keys.sort();
+                keys
+            })
+        };
+
+        let seen_by_interceptor = Rc::new(Cell::new(false));
+        let _interceptor = cx.update(|_, cx| {
+            cx.intercept_keystrokes({
+                let seen_by_interceptor = seen_by_interceptor.clone();
+                move |_, window, _| {
+                    seen_by_interceptor.set(window.is_key_pressed(PhysicalKey::KeyW));
+                }
+            })
+        });
+
+        // The key at the US "W" position types "z" on an AZERTY layout.
+        cx.simulate_event(key_down("z", Some(PhysicalKey::KeyW), false));
+        assert!(seen_by_interceptor.get());
+        cx.simulate_event(key_down("z", Some(PhysicalKey::KeyW), true));
+        cx.simulate_event(key_down("q", Some(PhysicalKey::KeyA), false));
+        cx.simulate_event(key_down("x", None, false));
+        assert_eq!(pressed_keys(cx), [PhysicalKey::KeyA, PhysicalKey::KeyW]);
+
+        cx.simulate_event(key_up("z", Some(PhysicalKey::KeyW)));
+        cx.simulate_event(key_up("x", None));
+        assert_eq!(pressed_keys(cx), [PhysicalKey::KeyA]);
+        cx.update(|window, _| {
+            assert!(window.is_key_pressed(PhysicalKey::KeyA));
+            assert!(!window.is_key_pressed(PhysicalKey::KeyW));
+        });
+
+        cx.deactivate_window();
+        assert!(pressed_keys(cx).is_empty());
+        cx.simulate_event(key_up("q", Some(PhysicalKey::KeyA)));
+        assert!(pressed_keys(cx).is_empty());
     }
 
     #[gpui::test]
@@ -9649,6 +9744,7 @@ mod tests {
                     keystroke: Keystroke::parse("down").expect("valid keystroke"),
                     is_held: false,
                     prefer_character_input: false,
+                    physical_key: None,
                 }),
                 cx,
             );

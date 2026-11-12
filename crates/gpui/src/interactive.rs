@@ -1,6 +1,6 @@
 use crate::{
     BackGestureEvent, Bounds, Capslock, Context, Empty, IntoElement, Keystroke, LongPressEvent,
-    Modifiers, Pixels, Point, Render, TouchDragEvent, Window, point, seal::Sealed,
+    Modifiers, PhysicalKey, Pixels, Point, Render, TouchDragEvent, Window, point, seal::Sealed,
 };
 use smallvec::SmallVec;
 use std::{any::Any, fmt::Debug, ops::Deref, path::PathBuf};
@@ -26,6 +26,10 @@ pub struct KeyDownEvent {
     /// The keystroke that was generated.
     pub keystroke: Keystroke,
 
+    /// The position of the pressed key, independent of the keyboard layout,
+    /// when the platform reports one. See [`PhysicalKey`] for where it does.
+    pub physical_key: Option<PhysicalKey>,
+
     /// Whether the key is currently held down.
     pub is_held: bool,
 
@@ -47,6 +51,10 @@ impl KeyEvent for KeyDownEvent {}
 pub struct KeyUpEvent {
     /// The keystroke that was released.
     pub keystroke: Keystroke,
+
+    /// The position of the released key, independent of the keyboard layout,
+    /// when the platform reports one. See [`PhysicalKey`] for where it does.
+    pub physical_key: Option<PhysicalKey>,
 }
 
 impl Sealed for KeyUpEvent {}
