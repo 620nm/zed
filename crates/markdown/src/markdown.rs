@@ -9130,7 +9130,7 @@ mod tests {
     }
 
     impl PlatformTextSystem for FontRunRecordingTextSystem {
-        fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> anyhow::Result<()> {
+        fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> anyhow::Result<gpui::AddedFonts> {
             self.text_system.add_fonts(fonts)
         }
 

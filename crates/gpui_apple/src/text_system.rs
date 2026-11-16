@@ -33,10 +33,10 @@ use font_kit::{
     sources::mem::MemSource,
 };
 use gpui::{
-    Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
-    FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem, RenderGlyphParams,
-    Result, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size, TextRenderingMode,
-    point, px, size, swap_rgba_pa_to_bgra,
+    AddedFonts, Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics,
+    FontRun, FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem,
+    RenderGlyphParams, Result, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size,
+    TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
 };
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::{
@@ -101,8 +101,9 @@ impl Default for AppleTextSystem {
 }
 
 impl PlatformTextSystem for AppleTextSystem {
-    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
-        self.0.write().add_fonts(fonts)
+    fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<AddedFonts> {
+        self.0.write().add_fonts(fonts)?;
+        Ok(AddedFonts::NotReported)
     }
 
     fn all_font_names(&self) -> Vec<String> {
